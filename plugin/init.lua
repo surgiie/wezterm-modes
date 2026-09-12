@@ -10,6 +10,7 @@ local MOTION  = "motion_mode"
 local REPLACE = "replace_mode"
 local KEYMAP  = "keymap_mode"
 local COUNT   = "count_mode"
+local JUMP    = "jump_mode"
 
 -- ── Shared actions ────────────────────────────────────────────────────────────
 
@@ -146,6 +147,11 @@ end
 ---                       this plugin needing to know anything about it.
 ---   - keymaps          table[]  Keymap-mode bindings (omit to disable keymap mode)
 ---                                Each entry: { key, description, command, execute?, confirm? }
+---   - jump_keys        string  Label alphabet for `J` (word-jump), most-reachable
+---                              keys first (default: "fjdkslaghrueiwotnvbc")
+---   - jump_pattern     string  Lua pattern selecting `J`'s targets (default:
+---                              "%S+" — every whitespace-separated token, so
+---                              "pod-edge-0" or "-it" are each one target)
 function M.apply_to_config(config, opts)
 	opts = opts or {}
 
@@ -169,6 +175,7 @@ function M.apply_to_config(config, opts)
 		REPLACE         = REPLACE,
 		KEYMAP          = KEYMAP,
 		COUNT           = COUNT,
+		JUMP            = JUMP,
 		enter_normal    = enter_normal,
 		enter_insert    = enter_insert,
 		noop            = noop,
@@ -180,12 +187,17 @@ function M.apply_to_config(config, opts)
 		count_state     = count_state,
 		last_change     = last_change,
 		do_change       = do_change,
+		jump_keys       = opts.jump_keys,
+		jump_pattern    = opts.jump_pattern,
 	}
+
+	ctx.jump = load("jump.lua")(ctx)
 
 	config.key_tables[MOTION]  = load("modes/motion.lua")(ctx)
 	config.key_tables[REPLACE] = load("modes/replace.lua")(ctx)
 	config.key_tables[DELETE]  = load("modes/delete.lua")(ctx)
 	config.key_tables[COUNT]   = load("modes/count.lua")(ctx)
+	config.key_tables[JUMP]    = ctx.jump.key_table
 	if #keymaps > 0 then
 		config.key_tables[KEYMAP] = load("modes/keymap.lua")(ctx)
 	end
@@ -226,6 +238,7 @@ function M.apply_to_config(config, opts)
 		DELETE     = DELETE,
 		KEYMAP     = KEYMAP,
 		COUNT      = COUNT,
+		JUMP       = JUMP,
 		should_run = should_run,
 		icon       = icon,
 		left_status_prefix = left_status_prefix,

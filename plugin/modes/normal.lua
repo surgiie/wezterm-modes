@@ -53,6 +53,7 @@ return function(ctx)
 	local count_state     = ctx.count_state
 	local last_change     = ctx.last_change
 	local do_change       = ctx.do_change
+	local jump            = ctx.jump
 
 	local function open_keymap_picker(window, pane)
 		if not should_run(pane) then return end
@@ -110,6 +111,14 @@ return function(ctx)
 		{ key = "w", action = wezterm.action.SendKey({ key = "f", mods = "ALT" }) },
 		{ key = "b", action = wezterm.action.SendKey({ key = "b", mods = "ALT" }) },
 		{ key = "e", action = wezterm.action.SendKey({ key = "f", mods = "ALT" }) },
+
+		-- J: label-jump to a token on the current input line. See jump.lua
+		-- for why this is a press-the-label picker rather than
+		-- nvim-labels-style floating labels.
+		{ key = "J", action = wezterm.action_callback(function(window, pane)
+			if not should_run(pane) then return end
+			jump.open_word_jump(window, pane)
+		end) },
 
 		-- character delete: x deletes forward (DEL), X deletes backward (Backspace)
 		{ key = "x", action = wezterm.action_callback(function(window, pane)

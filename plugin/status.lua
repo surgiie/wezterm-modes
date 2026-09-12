@@ -15,6 +15,15 @@ local COLORS = {
 ---
 --- @param ctx table  Plugin context:
 ---   - NORMAL     string    Normal mode key table name
+---   - JUMP       string    Jump mode key table name — the only mode that
+---                         owns the right status (its label:word legend);
+---                         every other mode gets it forced blank here on
+---                         every tick, so the legend can't outlive jump_mode
+---                         no matter how it was left (a completed jump,
+---                         Escape, a pane focus change, config reload, or
+---                         any key falling through unhandled) — jump.lua's
+---                         own clear on commit/cancel is still there for
+---                         immediate feedback; this is the backstop.
 ---   - should_run function  function(pane) → boolean; false = plugin is no-op for this pane
 ---   - left_status_prefix function(pane) → string?  Caller-supplied decoration
 ---                         prepended to every left-status render; this module
@@ -25,6 +34,7 @@ return function(ctx)
 	local DELETE     = ctx.DELETE
 	local KEYMAP     = ctx.KEYMAP
 	local COUNT      = ctx.COUNT
+	local JUMP       = ctx.JUMP
 	local should_run = ctx.should_run
 	local icon       = ctx.icon or ""
 	local left_status_prefix = ctx.left_status_prefix
@@ -52,8 +62,22 @@ return function(ctx)
 	end
 
 	wezterm.on("update-status", function(window, pane)
-		if not should_run(pane) then
-			if window:active_key_table() ~= nil then
+		local kt = window:active_key_table()
+		local active = should_run(pane)
+
+		-- The right status is jump_mode's label:word legend and belongs to
+		-- it alone, and only while the plugin actually considers itself
+		-- active for this pane. Force it blank every other tick, so it
+		-- can't outlive jump_mode regardless of how that mode was left —
+		-- jump.lua clears it itself on a completed jump or Escape, but a
+		-- pane focus change, config reload, or any key falling through
+		-- unhandled would otherwise leave it stuck.
+		if kt ~= JUMP or not active then
+			window:set_right_status("")
+		end
+
+		if not active then
+			if kt ~= nil then
 				window:perform_action(wezterm.action.PopKeyTable, pane)
 			end
 			if window:leader_is_active() then
@@ -64,15 +88,13 @@ return function(ctx)
 			return
 		end
 
-		local kt = window:active_key_table()
-
 		if window:leader_is_active() then
 			window:set_left_status(render(pane, COLORS.leader, " LEADER "))
 		elseif kt == NORMAL then
 			window:set_left_status(render(pane, COLORS.normal, " NORMAL "))
 		elseif kt == "copy_mode" then
 			window:set_left_status(render(pane, COLORS.visual, " VISUAL "))
-		elseif kt == YANK or kt == DELETE or kt == COUNT then
+		elseif kt == YANK or kt == DELETE or kt == COUNT or kt == JUMP then
 			window:set_left_status(render(pane, COLORS.normal, " NORMAL "))
 		elseif kt == KEYMAP or (kt and KEYMAP and kt:find("^" .. KEYMAP .. "_")) then
 			window:set_left_status(render(pane, COLORS.keymap, " KEYMAP "))

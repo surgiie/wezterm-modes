@@ -27,12 +27,27 @@ A WezTerm plugin that gives your terminal a vim-like editing experience.
 | `^`              | First non-whitespace character (requires shell integration) |
 | `G`              | End of input          |
 | `gg`             | Start of input        |
+| `J`              | Label-jump: type a token's label on the current input line, cursor moves there (requires shell integration) |
 | `CTRL+u`         | Scroll up half page   |
 | `CTRL+d`         | Scroll down half page |
 | `CTRL+f`         | Scroll down full page |
 | `CTRL+b`         | Scroll up full page   |
 
 Numeric prefixes (`1`-`9`, then any further digits) only apply to word motions and to `dw`/`db` below — other motions and operators don't accept a count.
+
+`J` labels every whitespace-separated token on the current input line —
+`pod-edge-admin-0`, `-it`, `--`, `bin/bash` are each one target, not split
+apart at their dashes/slashes — nearest to the cursor gets the shortest
+label, and they're listed in the right status bar (`f:kubectl  j:exec
+d:-it  ...`). Type a label's key(s) and it jumps immediately, no `Enter`;
+`Backspace` undoes a key, `Escape` cancels. There's no inline overlay drawn
+over the tokens themselves — WezTerm has no hook to draw overlay text over
+live pane content, and even its built-in QuickSelect never reports a match's
+position back to Lua, only its text — so the status bar is the closest
+stand-in for nvim-labels' floating labels. Configure the label alphabet via
+`jump_keys` and what counts as a token via `jump_pattern` (see Configuration
+below); only works on the line the cursor is currently on, and assumes it
+fits on one row.
 
 ### Editing
 
@@ -141,9 +156,18 @@ vim_modes.apply_to_config(config, {
         { key = "gc", description = "Git commit",  execute = false, action = "git commit -m '<cursor>'" },
         { key = "n",  description = "Open neovim", action = "nvim ." },
     },
+
+    -- label alphabet for J (word-jump), most-reachable keys first
+    -- (default: "fjdkslaghrueiwotnvbc")
+    jump_keys = "fjdkslaghrueiwotnvbc",
+
+    -- Lua pattern selecting J's targets (default: "%S+" — every
+    -- whitespace-separated token, so "pod-edge-0" or "-it" are each one
+    -- target rather than split at their dashes)
+    jump_pattern = "%S+",
 })
 ```
 
 ## Shell integration
 
-Required for `yy`, `yd`, and `^`. These operations use WezTerm's semantic zones to locate the current input line, which requires shell integration to be sourced. See the [WezTerm shell integration docs](https://wezterm.org/shell-integration.html) for setup instructions.
+Required for `yy`, `yd`, `^`, and `J`. These operations use WezTerm's semantic zones to locate the current input line, which requires shell integration to be sourced. See the [WezTerm shell integration docs](https://wezterm.org/shell-integration.html) for setup instructions.
