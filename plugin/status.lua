@@ -12,6 +12,7 @@ local COLORS = {
 }
 
 local DEFAULT_REDRAW_SEQUENCE = "\27[9001~"
+local PROMPT_USER_VAR = "wezterm_modes_prompt"
 
 --- Register the update-status event handler that drives the mode status bar.
 --- Active key table name determines the displayed mode label.
@@ -76,21 +77,58 @@ return function(ctx)
 		})
 	end
 
+	local debug_enabled = starship_opts and starship_opts.debug == true
+	local last_trace = {}
+
+	--- Logs only when a value changes for a pane, so the log stays readable at
+	--- the update-status rate.
+	local function trace(pane, name, value)
+		if not debug_enabled or not wezterm.log_info then
+			return
+		end
+		local key = tostring(pane:pane_id()) .. ":" .. name
+		if last_trace[key] ~= value then
+			last_trace[key] = value
+			wezterm.log_info(string.format("wezterm-modes pane=%s %s=%s", tostring(pane:pane_id()), name, tostring(value)))
+		end
+	end
+
 	--- A bash script or fzf launched from the prompt still passes the
-	--- process-name check, so with shell integration the cursor must also be
-	--- inside the last Input zone. Without integration the zone check is
-	--- skipped.
+	--- process-name check, so the shell must report that it is at its prompt
+	--- via the PROMPT_USER_VAR user var ("1" at the prompt, anything else, or
+	--- unset, means not ready). A new shell is therefore not treated as ready
+	--- until its first precmd, which keeps the redraw out of rc-file loading.
 	local function at_shell(pane)
-		if ctx.pane_is_shell and not ctx.pane_is_shell(pane) then
-			return false
+		local result = false
+		if not ctx.pane_is_shell or ctx.pane_is_shell(pane) then
+			local vars_ok, user_vars = pcall(function() return pane:get_user_vars() end)
+			result = vars_ok and user_vars ~= nil and user_vars[PROMPT_USER_VAR] == "1"
 		end
-		local zones_ok, zones = pcall(pane.get_semantic_zones, pane, "Input")
-		if not zones_ok or not zones or #zones == 0 then
-			return true
+		trace(pane, "at_shell", result)
+		return result
+	end
+
+	local redraw_pending = {}
+
+	--- Send the redraw now if the pane is at a prompt, otherwise leave it
+	--- pending so a later tick delivers it instead of losing it.
+	local function request_redraw(window, pane)
+		if not redraw_sequence then
+			return
 		end
-		local zone = zones[#zones]
-		local cursor_row = pane:get_cursor_position().y
-		return cursor_row >= zone.start_y and cursor_row <= zone.end_y
+		local pane_id = pane:pane_id()
+		if at_shell(pane) then
+			redraw_pending[pane_id] = nil
+			window:perform_action(wezterm.action.SendString(redraw_sequence), pane)
+		else
+			redraw_pending[pane_id] = true
+		end
+	end
+
+	local function flush_pending_redraw(window, pane)
+		if redraw_pending[pane:pane_id()] then
+			request_redraw(window, pane)
+		end
 	end
 
 	--- Set the left status to a mode badge, or to just the caller's prefix when
@@ -110,8 +148,10 @@ return function(ctx)
 			return
 		end
 		local changed = state_publisher.publish(pane:pane_id(), label)
-		if changed and redraw_sequence and at_shell(pane) then
-			window:perform_action(wezterm.action.SendString(redraw_sequence), pane)
+		if changed then
+			request_redraw(window, pane)
+		else
+			flush_pending_redraw(window, pane)
 		end
 	end
 
@@ -122,8 +162,8 @@ return function(ctx)
 			return
 		end
 		local changed = state_publisher.publish_legend(pane:pane_id(), text)
-		if changed and redraw_sequence and at_shell(pane) then
-			window:perform_action(wezterm.action.SendString(redraw_sequence), pane)
+		if changed then
+			request_redraw(window, pane)
 		end
 	end
 
@@ -152,6 +192,7 @@ return function(ctx)
 	wezterm.on("update-status", function(window, pane)
 		local kt = window:active_key_table()
 		local active = should_run(pane)
+		trace(pane, "active", active)
 
 		-- Skip the left status while a jump pick is in progress — jump.lua
 		-- paints its own legend there directly, and this handler would
@@ -167,6 +208,7 @@ return function(ctx)
 			if kt ~= nil then
 				window:perform_action(wezterm.action.PopKeyTable, pane)
 			end
+			redraw_pending[pane:pane_id()] = nil
 			if state_publisher then
 				state_publisher.clear(pane:pane_id())
 			end
@@ -179,6 +221,7 @@ return function(ctx)
 		end
 
 		local label = resolve_label(kt, window:leader_is_active())
+		trace(pane, "label", label)
 		publish_mode(window, pane, label)
 
 		if label == "JUMP" then

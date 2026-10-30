@@ -5,7 +5,7 @@
 --- swap out the filesystem.
 ---
 --- @param opts table?  { state_dir?: string }
---- @param deps table?  { open, remove, mkdir } overrides for io.open, os.remove, directory creation
+--- @param deps table?  { open, remove, mkdir, rename } overrides for io.open, os.remove, directory creation, os.rename
 --- Jump mode's label:word legend goes to a sibling `<pane_id>.jump` file.
 ---
 --- @return table       { publish(pane_id, label) -> boolean, clear(pane_id), path_for(pane_id) -> string,
@@ -21,6 +21,20 @@ return function(opts, deps)
 	local remove_file = deps.remove or os.remove
 	local make_directory = deps.mkdir or function(path)
 		os.execute("mkdir -p '" .. path:gsub("'", "'\\''") .. "'")
+	end
+
+	local rename_file = deps.rename or os.rename
+
+	--- Rename is atomic, so a reader never sees a truncated file.
+	local function write_atomically(path, text)
+		local temporary_path = path .. ".tmp"
+		local handle = open_file(temporary_path, "w")
+		if not handle then
+			return false
+		end
+		handle:write(text)
+		handle:close()
+		return rename_file(temporary_path, path) ~= nil
 	end
 
 	local last_written = {}
@@ -39,12 +53,9 @@ return function(opts, deps)
 			make_directory(state_dir)
 			directory_ready = true
 		end
-		local handle = open_file(path_for(pane_id), "w")
-		if not handle then
+		if not write_atomically(path_for(pane_id), label) then
 			return false
 		end
-		handle:write(label)
-		handle:close()
 		last_written[pane_id] = label
 		return true
 	end
@@ -78,12 +89,9 @@ return function(opts, deps)
 			make_directory(state_dir)
 			directory_ready = true
 		end
-		local handle = open_file(legend_path_for(pane_id), "w")
-		if not handle then
+		if not write_atomically(legend_path_for(pane_id), text) then
 			return false
 		end
-		handle:write(text)
-		handle:close()
 		last_legend[pane_id] = text
 		return true
 	end

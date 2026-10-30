@@ -105,7 +105,7 @@ Show the current mode in your [starship](https://starship.rs) prompt instead of 
 How it works:
 
 1. The plugin writes the mode label (e.g. `NORMAL`) to `$XDG_RUNTIME_DIR/wezterm-modes/<pane_id>` whenever it changes (`/tmp` if `XDG_RUNTIME_DIR` is unset).
-2. It then sends the shell a private escape sequence (`ESC [ 9001 ~`) so the shell redraws its prompt. This is only sent when the pane's foreground process is a shell, never to a TUI or REPL.
+2. It then sends the shell a private escape sequence (`ESC [ 9001 ~`) so the shell redraws its prompt. This is only sent when the pane's foreground process is a shell that is at its prompt, never to a TUI, REPL or running command. A redraw that couldn't be sent is retried on a later tick.
 3. A starship custom module reads the file for the shell's own pane (`$WEZTERM_PANE`).
 
 Setup takes three pieces, and the shell binding should be in place before you enable the plugin option.
@@ -121,6 +121,18 @@ bindkey $'\e[9001~' wezterm-modes-redraw
 ```
 
 With zsh's vi keymaps, also bind it in `viins` and `vicmd` (`bindkey -M viins ...`). Without a binding the shell prints the sequence's trailing characters at the prompt; set `redraw_sequence = false` if you don't want a redraw at all.
+
+Also have the shell report whether it is at its prompt, so the redraw is never sent into a running command (e.g. an fzf launched by a bash script) and is retried once the prompt returns:
+
+```zsh
+wezterm-modes-prompt-state() { printf '\e]1337;SetUserVar=wezterm_modes_prompt=%s\a' "$(printf %s "$1" | base64)" }
+precmd_functions+=(wezterm-modes-prompt-precmd)
+preexec_functions+=(wezterm-modes-prompt-preexec)
+wezterm-modes-prompt-precmd() { wezterm-modes-prompt-state 1 }
+wezterm-modes-prompt-preexec() { wezterm-modes-prompt-state 0 }
+```
+
+This is required for the redraw: a pane is only treated as being at a prompt once its shell has reported `1`, so nothing is sent while the shell is still loading its rc files or while a command runs. Until then the badge stays visible even with `badge = false`.
 
 #### 2. Starship modules
 
@@ -172,6 +184,7 @@ vim_modes.apply_to_config(config, {
         badge = false,                          -- hide the left-status badge at shell prompts (default: true)
         -- state_dir = "/some/dir",             -- default: $XDG_RUNTIME_DIR/wezterm-modes
         -- redraw_sequence = "\27[9001~",       -- or false to skip the prompt redraw
+        -- debug = true,                        -- log per-pane active/at_shell/label changes (WezTerm debug overlay, Ctrl+Shift+L)
     },
 })
 

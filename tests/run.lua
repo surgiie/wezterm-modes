@@ -95,6 +95,11 @@ local function fake_filesystem()
 				}
 			end,
 			remove = function(path) files[path] = nil end,
+			rename = function(from, to)
+				files[to] = files[from]
+				files[from] = nil
+				return true
+			end,
 			mkdir = function(path) made_directories[#made_directories + 1] = path end,
 		},
 	}
@@ -103,6 +108,37 @@ end
 test("starship: publish writes the label to the pane file", function()
 	local filesystem = fake_filesystem()
 	local publisher = dofile("plugin/starship.lua")({ state_dir = "/state" }, filesystem.deps)
+	assert_equal(publisher.publish(7, "NORMAL"), true)
+	assert_equal(filesystem.files["/state/7"], "NORMAL")
+end)
+
+test("starship: writes go through a temp file that is renamed into place", function()
+	local filesystem = fake_filesystem()
+	local renames = {}
+	local original_rename = filesystem.deps.rename
+	filesystem.deps.rename = function(from, to)
+		renames[#renames + 1] = { from = from, to = to }
+		return original_rename(from, to)
+	end
+	local publisher = dofile("plugin/starship.lua")({ state_dir = "/state" }, filesystem.deps)
+	publisher.publish(7, "NORMAL")
+	assert_equal(#renames, 1)
+	assert_equal(renames[1].from, "/state/7.tmp")
+	assert_equal(renames[1].to, "/state/7")
+	assert_equal(filesystem.files["/state/7.tmp"], nil)
+end)
+
+test("starship: a failed rename reports failure and retries next time", function()
+	local filesystem = fake_filesystem()
+	local original_rename = filesystem.deps.rename
+	local rename_works = false
+	filesystem.deps.rename = function(from, to)
+		if not rename_works then return nil end
+		return original_rename(from, to)
+	end
+	local publisher = dofile("plugin/starship.lua")({ state_dir = "/state" }, filesystem.deps)
+	assert_equal(publisher.publish(7, "NORMAL"), false)
+	rename_works = true
 	assert_equal(publisher.publish(7, "NORMAL"), true)
 	assert_equal(filesystem.files["/state/7"], "NORMAL")
 end)
@@ -261,7 +297,10 @@ local function fake_window(key_table, leader_active)
 end
 
 local function fake_pane(pane_id)
-	return { pane_id = function() return pane_id end }
+	return {
+		pane_id = function() return pane_id end,
+		get_user_vars = function() return { wezterm_modes_prompt = "1" } end,
+	}
 end
 
 test("status: without starship opts, nothing is written and the badge shows", function()
@@ -393,51 +432,106 @@ test("redraw: sent when pane_is_shell confirms a shell", function()
 	assert_equal(#window.sent, 1)
 end)
 
-local function pane_with_zone(pane_id, zone, cursor_row)
+local function pane_with_prompt_var(pane_id, prompt_flag)
+	local user_vars = {}
+	user_vars.wezterm_modes_prompt = prompt_flag
 	return {
 		pane_id = function() return pane_id end,
-		get_semantic_zones = function() return zone and { zone } or {} end,
-		get_cursor_position = function() return { x = 0, y = cursor_row } end,
+		get_user_vars = function() return user_vars end,
+		user_vars = user_vars,
 	}
 end
 
-test("redraw: sent when the cursor is inside the last Input zone", function()
+test("redraw: sent when the shell reports it is at its prompt", function()
 	local handler = load_status({ starship = { state_dir = "/state" } })
 	local window = fake_window("normal_mode")
-	handler(window, pane_with_zone(5, { start_y = 10, end_y = 11 }, 11))
+	handler(window, pane_with_prompt_var(5, "1"))
 	assert_equal(#window.sent, 1)
 end)
 
-test("redraw: not sent while a command runs below the Input zone", function()
+test("redraw: unset prompt var holds the redraw and keeps the badge until the shell reports", function()
+	local handler = load_status({ starship = { state_dir = "/state", badge = false } })
+	local pane = pane_with_prompt_var(5, nil)
+	local early_window = fake_window("normal_mode")
+	handler(early_window, pane)
+	assert_equal(#early_window.sent, 0)
+	assert_equal(early_window.left_status, " NORMAL ")
+	pane.user_vars.wezterm_modes_prompt = "1"
+	local ready_window = fake_window("normal_mode")
+	handler(ready_window, pane)
+	assert_equal(#ready_window.sent, 1)
+	assert_equal(ready_window.left_status, "")
+end)
+
+test("redraw: pane without user var support never redraws", function()
+	local handler = load_status({ starship = { state_dir = "/state" } })
+	local window = fake_window("normal_mode")
+	handler(window, { pane_id = function() return 5 end })
+	assert_equal(#window.sent, 0)
+end)
+
+test("redraw: not sent while a command runs, but the label is still published", function()
 	local handler, filesystem = load_status({ starship = { state_dir = "/state" } })
 	local window = fake_window("normal_mode")
-	handler(window, pane_with_zone(5, { start_y = 10, end_y = 10 }, 14))
+	handler(window, pane_with_prompt_var(5, "0"))
 	assert_equal(#window.sent, 0)
 	assert_equal(filesystem.files["/state/5"], "NORMAL")
 end)
 
-test("redraw: no Input zones (no shell integration) falls back to sending", function()
+test("redraw: a dropped redraw is delivered once the prompt returns", function()
 	local handler = load_status({ starship = { state_dir = "/state" } })
+	local pane = pane_with_prompt_var(5, "0")
+	local running_window = fake_window("normal_mode")
+	handler(running_window, pane)
+	handler(running_window, pane)
+	assert_equal(#running_window.sent, 0)
+	pane.user_vars.wezterm_modes_prompt = "1"
+	local prompt_window = fake_window("normal_mode")
+	handler(prompt_window, pane)
+	assert_equal(#prompt_window.sent, 1)
+	handler(prompt_window, pane)
+	assert_equal(#prompt_window.sent, 1)
+end)
+
+test("redraw: pending redraw is dropped when the pane goes inactive", function()
+	local active = true
+	local handler = load_status({
+		starship = { state_dir = "/state" },
+		should_run = function() return active end,
+	})
+	local pane = pane_with_prompt_var(5, "0")
+	handler(fake_window("normal_mode"), pane)
+	active = false
+	handler(fake_window(nil), pane)
+	active = true
+	pane.user_vars.wezterm_modes_prompt = "1"
 	local window = fake_window("normal_mode")
-	handler(window, pane_with_zone(5, nil, 3))
+	handler(window, pane)
 	assert_equal(#window.sent, 1)
 end)
 
-test("redraw: zone check cannot override a non-shell process", function()
+test("redraw: prompt var cannot override a non-shell process", function()
 	local handler = load_status({
 		starship = { state_dir = "/state" },
 		pane_is_shell = function() return false end,
 	})
 	local window = fake_window("normal_mode")
-	handler(window, pane_with_zone(5, { start_y = 10, end_y = 11 }, 11))
+	handler(window, pane_with_prompt_var(5, "1"))
 	assert_equal(#window.sent, 0)
 end)
 
 test("badge: badge = false shows the badge while a command runs", function()
 	local handler = load_status({ starship = { state_dir = "/state", badge = false } })
 	local window = fake_window("normal_mode")
-	handler(window, pane_with_zone(5, { start_y = 10, end_y = 10 }, 14))
+	handler(window, pane_with_prompt_var(5, "0"))
 	assert_equal(window.left_status, " NORMAL ")
+end)
+
+test("badge: badge = false hides the badge at the prompt", function()
+	local handler = load_status({ starship = { state_dir = "/state", badge = false } })
+	local window = fake_window("normal_mode")
+	handler(window, pane_with_prompt_var(5, "1"))
+	assert_equal(window.left_status, "")
 end)
 
 test("redraw: nothing is sent when starship is not configured", function()
