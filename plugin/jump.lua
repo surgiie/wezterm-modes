@@ -180,17 +180,29 @@ return function(ctx)
 				parts[#parts + 1] = entry.label .. ":" .. entry.text
 			end
 		end
-		window:set_left_status(ctx.render_jump_status(pane, table.concat(parts, "  ")))
+		local legend = table.concat(parts, "  ")
+		window:set_left_status(ctx.render_jump_status(pane, legend))
+		if ctx.publish_legend then
+			ctx.publish_legend(window, pane, legend)
+		end
+	end
+
+	local function clear_prompt_legend(pane)
+		if ctx.clear_legend then
+			ctx.clear_legend(pane)
+		end
 	end
 
 	local function cancel(window, pane)
 		state.targets = nil
+		clear_prompt_legend(pane)
 		window:perform_action(enter_normal, pane)
 	end
 
 	local function commit(window, pane, col)
 		local delta = col - state.cur_col
 		state.targets = nil
+		clear_prompt_legend(pane)
 
 		-- CTRL+F/CTRL+B, not arrow keys: confirmed via bindkey that both
 		-- land on forward-char/backward-char, but as a single control byte

@@ -3,13 +3,15 @@ local wezterm = require("wezterm")
 local COLORS = {
 	leader  = "#ffff87",
 	normal  = "#a4e400",
-	insert  = "#89ddff",
+	insert  = "#5fafd7",
 	visual  = "#e0a060",
 	keymap  = "#c792ea",
 	jump    = "#ff5555",
 	other   = "#ffff87",
-	fg      = "#000001",
+	block   = "#1c1c1c",
 }
+
+local DEFAULT_REDRAW_SEQUENCE = "\27[9001~"
 
 --- Register the update-status event handler that drives the mode status bar.
 --- Active key table name determines the displayed mode label.
@@ -29,15 +31,27 @@ local COLORS = {
 ---                         prepended to every left-status render; this module
 ---                         has no opinion on what it contains.
 return function(ctx)
-	local NORMAL     = ctx.NORMAL
-	local YANK       = ctx.YANK
-	local DELETE     = ctx.DELETE
-	local KEYMAP     = ctx.KEYMAP
-	local COUNT      = ctx.COUNT
-	local JUMP       = ctx.JUMP
 	local should_run = ctx.should_run
 	local icon       = ctx.icon or ""
 	local left_status_prefix = ctx.left_status_prefix
+
+	local resolve_label = ctx.load("mode_label.lua")(ctx)
+	local starship_opts = ctx.starship
+	local state_publisher = starship_opts and ctx.load("starship.lua")(starship_opts) or nil
+	local badge_enabled = not (starship_opts and starship_opts.badge == false)
+	local redraw_sequence = nil
+	if starship_opts and starship_opts.redraw_sequence ~= false then
+		redraw_sequence = starship_opts.redraw_sequence or DEFAULT_REDRAW_SEQUENCE
+	end
+
+	local LABEL_COLORS = {
+		LEADER = COLORS.leader,
+		NORMAL = COLORS.normal,
+		INSERT = COLORS.insert,
+		VISUAL = COLORS.visual,
+		KEYMAP = COLORS.keymap,
+		JUMP   = COLORS.jump,
+	}
 
 	local function prefix(pane)
 		if not left_status_prefix then
@@ -46,19 +60,64 @@ return function(ctx)
 		return left_status_prefix(pane) or ""
 	end
 
-	--- Render a bold colored status block with no separator glyphs.
+	--- Render a bold status block with no separator glyphs: mode-colored text
+	--- on a dark block.
 	--- @param pane userdata WezTerm pane, passed through to left_status_prefix
-	--- @param bg   string  Hex background color
+	--- @param color string Hex text color
 	--- @param text string  Label text (include surrounding spaces for padding)
 	--- @return string      Formatted WezTerm status string
-	local function render(pane, bg, text)
+	local function render(pane, color, text)
 		return prefix(pane) .. wezterm.format({
-			{ Background = { Color = bg } },
-			{ Foreground = { Color = COLORS.fg } },
+			{ Background = { Color = COLORS.block } },
+			{ Foreground = { Color = color } },
 			{ Attribute = { Intensity = "Bold" } },
 			{ Text = text },
 			{ Attribute = { Intensity = "Normal" } },
 		})
+	end
+
+	--- Set the left status to a mode badge, or to just the caller's prefix when
+	--- the badge is disabled and the pane is at a shell prompt (starship shows
+	--- the mode there; other panes such as a REPL keep the badge).
+	local function at_shell(pane)
+		return not ctx.pane_is_shell or ctx.pane_is_shell(pane)
+	end
+
+	local function show_badge(window, pane, rendered)
+		local hidden = not badge_enabled and at_shell(pane)
+		window:set_left_status(hidden and prefix(pane) or rendered)
+	end
+
+	--- Publish the label to starship's state file and, when it changed, nudge
+	--- the shell to redraw its prompt. should_run can be true for non-shell
+	--- panes (callers may allow e.g. a REPL), so the sequence is additionally
+	--- gated on ctx.pane_is_shell to keep it out of TUIs.
+	local function publish_mode(window, pane, label)
+		if not state_publisher then
+			return
+		end
+		local changed = state_publisher.publish(pane:pane_id(), label)
+		if changed and redraw_sequence and at_shell(pane) then
+			window:perform_action(wezterm.action.SendString(redraw_sequence), pane)
+		end
+	end
+
+	--- jump.lua's hooks for showing the legend in the prompt. No-ops without
+	--- starship opts. The redraw is gated like publish_mode's.
+	ctx.publish_legend = function(window, pane, text)
+		if not state_publisher then
+			return
+		end
+		local changed = state_publisher.publish_legend(pane:pane_id(), text)
+		if changed and redraw_sequence and at_shell(pane) then
+			window:perform_action(wezterm.action.SendString(redraw_sequence), pane)
+		end
+	end
+
+	ctx.clear_legend = function(pane)
+		if state_publisher then
+			state_publisher.clear_legend(pane:pane_id())
+		end
 	end
 
 	-- jump.lua's entry point into this module's rendering: the same colored
@@ -68,8 +127,8 @@ return function(ctx)
 	-- otherwise-empty tab bar).
 	ctx.render_jump_status = function(pane, legend)
 		return prefix(pane) .. wezterm.format({
-			{ Background = { Color = COLORS.jump } },
-			{ Foreground = { Color = COLORS.fg } },
+			{ Background = { Color = COLORS.block } },
+			{ Foreground = { Color = COLORS.jump } },
 			{ Attribute = { Intensity = "Bold" } },
 			{ Text = " JUMP " },
 			"ResetAttributes",
@@ -87,6 +146,7 @@ return function(ctx)
 		-- `kt == JUMP`, since ActivateKeyTable only enqueues the switch and
 		-- active_key_table() can briefly still report the old table.
 		if active and ctx.jump_state and ctx.jump_state.targets then
+			publish_mode(window, pane, "JUMP")
 			return
 		end
 
@@ -94,32 +154,26 @@ return function(ctx)
 			if kt ~= nil then
 				window:perform_action(wezterm.action.PopKeyTable, pane)
 			end
+			if state_publisher then
+				state_publisher.clear(pane:pane_id())
+			end
 			if window:leader_is_active() then
-				window:set_left_status(render(pane, COLORS.leader, " LEADER "))
+				show_badge(window, pane, render(pane, COLORS.leader, " LEADER "))
 			else
 				window:set_left_status(prefix(pane) .. (icon ~= "" and (" " .. icon .. " ") or ""))
 			end
 			return
 		end
 
-		if window:leader_is_active() then
-			window:set_left_status(render(pane, COLORS.leader, " LEADER "))
-		elseif kt == NORMAL then
-			window:set_left_status(render(pane, COLORS.normal, " NORMAL "))
-		elseif kt == "copy_mode" then
-			window:set_left_status(render(pane, COLORS.visual, " VISUAL "))
-		elseif kt == YANK or kt == DELETE or kt == COUNT then
-			window:set_left_status(render(pane, COLORS.normal, " NORMAL "))
-		elseif kt == JUMP then
+		local label = resolve_label(kt, window:leader_is_active())
+		publish_mode(window, pane, label)
+
+		if label == "JUMP" then
 			-- Pick just ended but enter_normal hasn't landed yet — plain
 			-- badge, no legend, instead of falling through to INSERT.
-			window:set_left_status(ctx.render_jump_status(pane, ""))
-		elseif kt == KEYMAP or (kt and KEYMAP and kt:find("^" .. KEYMAP .. "_")) then
-			window:set_left_status(render(pane, COLORS.keymap, " KEYMAP "))
-		elseif kt and kt:find("^" .. NORMAL) then
-			window:set_left_status(render(pane, COLORS.normal, " NORMAL "))
+			show_badge(window, pane, ctx.render_jump_status(pane, ""))
 		else
-			window:set_left_status(render(pane, COLORS.insert, " INSERT "))
+			show_badge(window, pane, render(pane, LABEL_COLORS[label], " " .. label .. " "))
 		end
 	end)
 end

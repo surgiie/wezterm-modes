@@ -6,7 +6,7 @@ A WezTerm plugin that gives your terminal a vim-like editing experience.
 
 | Mode    | Left status color | How to enter | Description |
 |---------|------------------|--------------|-------------|
-| INSERT  | Sky blue         | default; `i` from normal | Default mode; keystrokes pass through to the terminal |
+| INSERT  | Blue             | default; `i` from normal | Default mode; keystrokes pass through to the terminal |
 | NORMAL  | Green            | `Escape` | Vim-like editing; all keybindings active |
 | VISUAL  | Amber            | `v` from normal | WezTerm's built-in copy mode; press `v` again inside to begin selection |
 | KEYMAP  | Purple           | `:` from normal | Listens for one configured keymap key, then runs it and returns to insert |
@@ -98,6 +98,92 @@ keymaps = {
 You can type `:` to enter keymap mode, then type `ga` to execute the command `git add .`
 
 
+## Starship integration
+
+Show the current mode in your [starship](https://starship.rs) prompt instead of (or alongside) the left status badge.
+
+How it works:
+
+1. The plugin writes the mode label (e.g. `NORMAL`) to `$XDG_RUNTIME_DIR/wezterm-modes/<pane_id>` whenever it changes (`/tmp` if `XDG_RUNTIME_DIR` is unset).
+2. It then sends the shell a private escape sequence (`ESC [ 9001 ~`) so the shell redraws its prompt. This is only sent when the pane's foreground process is a shell, never to a TUI or REPL.
+3. A starship custom module reads the file for the shell's own pane (`$WEZTERM_PANE`).
+
+Setup takes three pieces, and the shell binding should be in place before you enable the plugin option.
+
+#### 1. Shell binding (zsh)
+
+Bind the sequence to a widget that resets the prompt:
+
+```zsh
+wezterm-modes-redraw() { zle reset-prompt }
+zle -N wezterm-modes-redraw
+bindkey $'\e[9001~' wezterm-modes-redraw
+```
+
+With zsh's vi keymaps, also bind it in `viins` and `vicmd` (`bindkey -M viins ...`). Without a binding the shell prints the sequence's trailing characters at the prompt; set `redraw_sequence = false` if you don't want a redraw at all.
+
+#### 2. Starship modules
+
+Starship can't change a style based on a command's output, so use one module per mode. Each `when` checks the state file using shell builtins only:
+
+```toml
+format = """
+${custom.wezterm_normal}${custom.wezterm_insert}${custom.wezterm_visual}${custom.wezterm_keymap}${custom.wezterm_leader}${custom.wezterm_jump}${custom.wezterm_jump_legend}$directory$character"""
+
+[custom.wezterm_normal]
+when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = NORMAL ]'
+format = '[ NORMAL ](bg:#1c1c1c fg:#a4e400 bold)'
+
+[custom.wezterm_insert]
+when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = INSERT ]'
+format = '[ INSERT ](bg:#1c1c1c fg:#5fafd7 bold)'
+
+[custom.wezterm_visual]
+when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = VISUAL ]'
+format = '[ VISUAL ](bg:#1c1c1c fg:#e0a060 bold)'
+
+[custom.wezterm_keymap]
+when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = KEYMAP ]'
+format = '[ KEYMAP ](bg:#1c1c1c fg:#c792ea bold)'
+
+[custom.wezterm_leader]
+when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = LEADER ]'
+format = '[ LEADER ](bg:#1c1c1c fg:#ffff87 bold)'
+
+[custom.wezterm_jump]
+when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = JUMP ]'
+format = '[ JUMP ](bg:#1c1c1c fg:#ff5555 bold)'
+
+[custom.wezterm_jump_legend]
+when = 'test -s "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE.jump"'
+command = 'read -r legend < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE.jump"; printf %s "$legend"'
+format = '[ $output ](bg:#1c1c1c fg:#d0d0d0)'
+```
+
+Use `;` rather than `&&` after `read`: the state file has no trailing newline, so `read` exits non-zero even though it sets `mode`. Outside WezTerm (or with no state file) every module is hidden.
+
+`wezterm_jump_legend` is optional. While a `J` pick is in progress the plugin also writes the `label:word` legend to `<pane_id>.jump` next to the state file and redraws the prompt as the legend narrows, so the hints show beside the JUMP block as well as in the WezTerm status bar. The file is removed when the pick ends.
+
+#### 3. Plugin option
+
+```lua
+vim_modes.apply_to_config(config, {
+    starship = {
+        badge = false,                          -- hide the left-status badge at shell prompts (default: true)
+        -- state_dir = "/some/dir",             -- default: $XDG_RUNTIME_DIR/wezterm-modes
+        -- redraw_sequence = "\27[9001~",       -- or false to skip the prompt redraw
+    },
+})
+
+config.status_update_interval = 150
+```
+
+`update-status` only fires on a timer, so the prompt lags a mode change by up to `status_update_interval` ms. Lower it for a snappier prompt.
+
+With `badge = false` the badge is still shown in panes that are not at a shell prompt but where the plugin runs (e.g. a REPL allowed by your `should_run`), since starship isn't visible there.
+
+Run the plugin tests with `lua tests/run.lua`.
+
 ## Installation
 
 **Via `wezterm.plugin.require`:**
@@ -141,6 +227,9 @@ vim_modes.apply_to_config(config, {
     --       })
     --   end,
     left_status_prefix = nil,
+
+    -- show the mode in your starship prompt; see "Starship integration" (omit to disable)
+    starship = nil,
 
     -- custom keymaps bound behind ":" keymap mode (omit to disable)
     -- key: single char fires immediately after ":"; two chars use the first as a group prefix

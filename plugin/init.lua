@@ -86,6 +86,10 @@ end
 -- ── Plugin directory (for loading sibling files) ──────────────────────────────
 
 local plugin_dir = (function()
+	local dir_override = rawget(_G, "WEZTERM_MODES_DIR")
+	if dir_override then
+		return dir_override
+	end
 	local ok, list = pcall(function() return wezterm.plugin.list() end)
 	if ok and list then
 		for _, entry in ipairs(list) do
@@ -137,6 +141,12 @@ end
 ---                       callers add their own app-specific decoration (e.g. a
 ---                       border block reflecting some other app's state) without
 ---                       this plugin needing to know anything about it.
+---   - starship          table   Publish the mode to a per-pane state file for a
+---                              starship custom module (omit to disable):
+---                              { state_dir? = "$XDG_RUNTIME_DIR/wezterm-modes",
+---                                badge? = true  -- false hides the left-status mode badge at shell prompts
+---                                redraw_sequence? = "\27[9001~"  -- sent to the shell when the
+---                                  mode changes so it can reset its prompt; false disables }
 ---   - keymaps          table[]  Keymap-mode bindings (omit to disable keymap mode)
 ---                                Each entry: { key, description, command, execute?, confirm? }
 ---   - jump_keys        string  Label alphabet for `J` (word-jump), most-reachable
@@ -183,6 +193,9 @@ function M.apply_to_config(config, opts)
 		jump_pattern    = opts.jump_pattern,
 		icon            = icon,
 		left_status_prefix = left_status_prefix,
+		load            = load,
+		pane_is_shell   = pane_is_shell,
+		starship        = opts.starship,
 	}
 
 	-- status.lua first: it stashes ctx.render_jump_status, which jump.lua
