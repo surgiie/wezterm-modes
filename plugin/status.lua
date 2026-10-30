@@ -13,6 +13,7 @@ local COLORS = {
 
 local DEFAULT_REDRAW_SEQUENCE = "\27[9001~"
 local PROMPT_USER_VAR = "wezterm_modes_prompt"
+local COMMAND_SETTLE_SECONDS = 2
 
 --- Register the update-status event handler that drives the mode status bar.
 --- Active key table name determines the displayed mode label.
@@ -93,6 +94,36 @@ return function(ctx)
 		end
 	end
 
+	local clock = ctx.clock or os.time
+	local commands_in_flight = {}
+
+	--- Called when a keymap types a command into the pane. The shell still
+	--- reports "1" until it reads that input, so a redraw sent in that gap
+	--- would queue behind the command and land in whatever it launches (fzf).
+	--- The pane counts as busy until the shell reports running ("0") and then
+	--- the prompt again; a command that finishes between two ticks is never
+	--- seen running, so it settles after COMMAND_SETTLE_SECONDS instead.
+	ctx.mark_command_sent = function(pane)
+		commands_in_flight[pane:pane_id()] = { sent_at = clock(), seen_running = false }
+	end
+
+	local function command_settled(pane, prompt_value)
+		local pane_id = pane:pane_id()
+		local in_flight = commands_in_flight[pane_id]
+		if not in_flight then
+			return true
+		end
+		if prompt_value ~= "1" then
+			in_flight.seen_running = true
+			return false
+		end
+		if in_flight.seen_running or clock() - in_flight.sent_at >= COMMAND_SETTLE_SECONDS then
+			commands_in_flight[pane_id] = nil
+			return true
+		end
+		return false
+	end
+
 	--- A bash script or fzf launched from the prompt still passes the
 	--- process-name check, so the shell must report that it is at its prompt
 	--- via the PROMPT_USER_VAR user var ("1" at the prompt, anything else, or
@@ -102,7 +133,9 @@ return function(ctx)
 		local result = false
 		if not ctx.pane_is_shell or ctx.pane_is_shell(pane) then
 			local vars_ok, user_vars = pcall(function() return pane:get_user_vars() end)
-			result = vars_ok and user_vars ~= nil and user_vars[PROMPT_USER_VAR] == "1"
+			local prompt_value = vars_ok and user_vars ~= nil and user_vars[PROMPT_USER_VAR] or nil
+			local settled = command_settled(pane, prompt_value)
+			result = prompt_value == "1" and settled
 		end
 		trace(pane, "at_shell", result)
 		return result
@@ -209,6 +242,7 @@ return function(ctx)
 				window:perform_action(wezterm.action.PopKeyTable, pane)
 			end
 			redraw_pending[pane:pane_id()] = nil
+			commands_in_flight[pane:pane_id()] = nil
 			if state_publisher then
 				state_publisher.clear(pane:pane_id())
 			end

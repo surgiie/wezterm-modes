@@ -510,6 +510,64 @@ test("redraw: pending redraw is dropped when the pane goes inactive", function()
 	assert_equal(#window.sent, 1)
 end)
 
+test("redraw: held while a just-sent command has not been read by the shell", function()
+	local now = 100
+	local handler, _, ctx = load_status({ starship = { state_dir = "/state" }, clock = function() return now end })
+	local pane = pane_with_prompt_var(5, "1")
+	ctx.mark_command_sent(pane)
+	local window = fake_window("normal_mode")
+	handler(window, pane)
+	assert_equal(#window.sent, 0)
+end)
+
+test("redraw: delivered once the command has run and the prompt returns", function()
+	local now = 100
+	local handler, _, ctx = load_status({ starship = { state_dir = "/state" }, clock = function() return now end })
+	local pane = pane_with_prompt_var(5, "1")
+	ctx.mark_command_sent(pane)
+	local window = fake_window("normal_mode")
+	handler(window, pane)
+	pane.user_vars.wezterm_modes_prompt = "0"
+	handler(window, pane)
+	assert_equal(#window.sent, 0)
+	pane.user_vars.wezterm_modes_prompt = "1"
+	handler(window, pane)
+	assert_equal(#window.sent, 1)
+end)
+
+test("redraw: a command that finished between ticks settles after the timeout", function()
+	local now = 100
+	local handler, _, ctx = load_status({ starship = { state_dir = "/state" }, clock = function() return now end })
+	local pane = pane_with_prompt_var(5, "1")
+	ctx.mark_command_sent(pane)
+	local window = fake_window("normal_mode")
+	handler(window, pane)
+	now = 101
+	handler(window, pane)
+	assert_equal(#window.sent, 0)
+	now = 102
+	handler(window, pane)
+	assert_equal(#window.sent, 1)
+end)
+
+test("redraw: in-flight marker is dropped when the pane goes inactive", function()
+	local active = true
+	local now = 100
+	local handler, _, ctx = load_status({
+		starship = { state_dir = "/state" },
+		should_run = function() return active end,
+		clock = function() return now end,
+	})
+	local pane = pane_with_prompt_var(5, "1")
+	ctx.mark_command_sent(pane)
+	active = false
+	handler(fake_window(nil), pane)
+	active = true
+	local window = fake_window("normal_mode")
+	handler(window, pane)
+	assert_equal(#window.sent, 1)
+end)
+
 test("redraw: prompt var cannot override a non-shell process", function()
 	local handler = load_status({
 		starship = { state_dir = "/state" },

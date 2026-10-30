@@ -54,6 +54,7 @@ end
 --- @param window  table  WezTerm Window object
 --- @param pane    table  WezTerm Pane object
 --- @param binding table  Keymap entry: { action, execute? }
+--- @return boolean  true when a command was submitted to the shell
 local function execute_command(window, pane, binding)
 	local raw      = type(binding.action) == "function" and binding.action(pane) or (binding.action or "")
 	local cmd      = raw:match("^%s*(.-)%s*$")
@@ -61,13 +62,15 @@ local function execute_command(window, pane, binding)
 	local expanded = cmd:gsub("^~", os.getenv("HOME") or "~")
 
 	-- Lead with the key-table pop so it and the typing land as one ordered unit.
-	local actions = { enter_insert }
-	local ctrl_b  = wezterm.action.SendKey({ key = "b", mods = "CTRL" })
+	local actions   = { enter_insert }
+	local submitted = false
+	local ctrl_b    = wezterm.action.SendKey({ key = "b", mods = "CTRL" })
 
 	local f = io.open(expanded, "r")
 	if f then
 		f:close()
 		table.insert(actions, wezterm.action.SendString(" " .. expanded .. "\n"))
+		submitted = true
 	elseif not execute then
 		local before = cmd:match("^(.-)%<cursor%>") or cmd
 		local after  = cmd:match("%<cursor%>(.*)$") or ""
@@ -78,9 +81,11 @@ local function execute_command(window, pane, binding)
 		for _ = 1, #after do table.insert(actions, ctrl_b) end
 	else
 		table.insert(actions, wezterm.action.SendString(" " .. cmd .. "\n"))
+		submitted = true
 	end
 
 	window:perform_action(wezterm.action.Multiple(actions), pane)
+	return submitted
 end
 
 -- ── Plugin directory (for loading sibling files) ──────────────────────────────
@@ -169,7 +174,8 @@ function M.apply_to_config(config, opts)
 	config.keys       = config.keys or {}
 
 	-- shared context passed to each mode builder
-	local ctx = {
+	local ctx
+	ctx = {
 		NORMAL          = NORMAL,
 		DELETE          = DELETE,
 		YANK            = YANK,
@@ -184,7 +190,11 @@ function M.apply_to_config(config, opts)
 		should_run      = should_run,
 		kt_timeout      = kt_timeout,
 		keymaps         = keymaps,
-		execute_command = execute_command,
+		execute_command = function(window, pane, binding)
+			if execute_command(window, pane, binding) then
+				ctx.mark_command_sent(pane)
+			end
+		end,
 		nested_kts      = config.key_tables,
 		count_state     = count_state,
 		last_change     = last_change,
