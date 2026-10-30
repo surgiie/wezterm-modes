@@ -76,13 +76,26 @@ return function(ctx)
 		})
 	end
 
+	--- A bash script or fzf launched from the prompt still passes the
+	--- process-name check, so with shell integration the cursor must also be
+	--- inside the last Input zone. Without integration the zone check is
+	--- skipped.
+	local function at_shell(pane)
+		if ctx.pane_is_shell and not ctx.pane_is_shell(pane) then
+			return false
+		end
+		local zones_ok, zones = pcall(pane.get_semantic_zones, pane, "Input")
+		if not zones_ok or not zones or #zones == 0 then
+			return true
+		end
+		local zone = zones[#zones]
+		local cursor_row = pane:get_cursor_position().y
+		return cursor_row >= zone.start_y and cursor_row <= zone.end_y
+	end
+
 	--- Set the left status to a mode badge, or to just the caller's prefix when
 	--- the badge is disabled and the pane is at a shell prompt (starship shows
 	--- the mode there; other panes such as a REPL keep the badge).
-	local function at_shell(pane)
-		return not ctx.pane_is_shell or ctx.pane_is_shell(pane)
-	end
-
 	local function show_badge(window, pane, rendered)
 		local hidden = not badge_enabled and at_shell(pane)
 		window:set_left_status(hidden and prefix(pane) or rendered)

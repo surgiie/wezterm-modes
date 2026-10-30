@@ -393,6 +393,53 @@ test("redraw: sent when pane_is_shell confirms a shell", function()
 	assert_equal(#window.sent, 1)
 end)
 
+local function pane_with_zone(pane_id, zone, cursor_row)
+	return {
+		pane_id = function() return pane_id end,
+		get_semantic_zones = function() return zone and { zone } or {} end,
+		get_cursor_position = function() return { x = 0, y = cursor_row } end,
+	}
+end
+
+test("redraw: sent when the cursor is inside the last Input zone", function()
+	local handler = load_status({ starship = { state_dir = "/state" } })
+	local window = fake_window("normal_mode")
+	handler(window, pane_with_zone(5, { start_y = 10, end_y = 11 }, 11))
+	assert_equal(#window.sent, 1)
+end)
+
+test("redraw: not sent while a command runs below the Input zone", function()
+	local handler, filesystem = load_status({ starship = { state_dir = "/state" } })
+	local window = fake_window("normal_mode")
+	handler(window, pane_with_zone(5, { start_y = 10, end_y = 10 }, 14))
+	assert_equal(#window.sent, 0)
+	assert_equal(filesystem.files["/state/5"], "NORMAL")
+end)
+
+test("redraw: no Input zones (no shell integration) falls back to sending", function()
+	local handler = load_status({ starship = { state_dir = "/state" } })
+	local window = fake_window("normal_mode")
+	handler(window, pane_with_zone(5, nil, 3))
+	assert_equal(#window.sent, 1)
+end)
+
+test("redraw: zone check cannot override a non-shell process", function()
+	local handler = load_status({
+		starship = { state_dir = "/state" },
+		pane_is_shell = function() return false end,
+	})
+	local window = fake_window("normal_mode")
+	handler(window, pane_with_zone(5, { start_y = 10, end_y = 11 }, 11))
+	assert_equal(#window.sent, 0)
+end)
+
+test("badge: badge = false shows the badge while a command runs", function()
+	local handler = load_status({ starship = { state_dir = "/state", badge = false } })
+	local window = fake_window("normal_mode")
+	handler(window, pane_with_zone(5, { start_y = 10, end_y = 10 }, 14))
+	assert_equal(window.left_status, " NORMAL ")
+end)
+
 test("redraw: nothing is sent when starship is not configured", function()
 	local handler = load_status()
 	local window = fake_window("normal_mode")
