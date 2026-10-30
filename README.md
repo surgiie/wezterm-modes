@@ -125,12 +125,17 @@ With zsh's vi keymaps, also bind it in `viins` and `vicmd` (`bindkey -M viins ..
 Also have the shell report whether it is at its prompt, so the redraw is never sent into a running command (e.g. an fzf launched by a bash script) and is retried once the prompt returns:
 
 ```zsh
-wezterm-modes-prompt-state() { printf '\e]1337;SetUserVar=wezterm_modes_prompt=%s\a' "$(printf %s "$1" | base64)" }
-precmd_functions+=(wezterm-modes-prompt-precmd)
+wezterm-modes-prompt-state() { printf '\e]1337;SetUserVar=wezterm_modes_prompt=%s\a' "$1" }
+wezterm-modes-line-init() { wezterm-modes-prompt-state MQ== }
+wezterm-modes-line-finish() { wezterm-modes-prompt-state MA== }
+wezterm-modes-prompt-preexec() { wezterm-modes-prompt-state MA== }
+autoload -Uz add-zle-hook-widget
+add-zle-hook-widget line-init wezterm-modes-line-init
+add-zle-hook-widget line-finish wezterm-modes-line-finish
 preexec_functions+=(wezterm-modes-prompt-preexec)
-wezterm-modes-prompt-precmd() { wezterm-modes-prompt-state 1 }
-wezterm-modes-prompt-preexec() { wezterm-modes-prompt-state 0 }
 ```
+
+(`MQ==` and `MA==` are `1` and `0` in base64.) Report from the zle hooks rather than `precmd`: `precmd` runs before the shell is reading input, so a redraw sent in that window is echoed by the tty and ends up as literal `[9001~` in the line.
 
 This is required for the redraw: a pane is only treated as being at a prompt once its shell has reported `1`, so nothing is sent while the shell is still loading its rc files or while a command runs. Until then the badge stays visible even with `badge = false`.
 

@@ -128,7 +128,7 @@ return function(ctx)
 	--- process-name check, so the shell must report that it is at its prompt
 	--- via the PROMPT_USER_VAR user var ("1" at the prompt, anything else, or
 	--- unset, means not ready). A new shell is therefore not treated as ready
-	--- until its first precmd, which keeps the redraw out of rc-file loading.
+	--- until its first line-init, which keeps the redraw out of rc-file loading.
 	local function at_shell(pane)
 		local result = false
 		if not ctx.pane_is_shell or ctx.pane_is_shell(pane) then
