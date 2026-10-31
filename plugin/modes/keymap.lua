@@ -13,6 +13,10 @@ local wezterm = require("wezterm")
 --- skipped rather than raising — a mistake in `opts.keymaps` should not take
 --- down the whole WezTerm config.
 ---
+--- Note on duplicate keys: If the same key appears multiple times in opts.keymaps,
+--- the last entry wins. This is logged as a warning but allows config merging
+--- without requiring users to remove conflicting entries manually.
+---
 --- @param ctx table  Plugin context (noop, should_run, kt_timeout,
 ---                    keymaps, nested_kts, KEYMAP, execute_command)
 --- @return table     List of WezTerm key binding definitions

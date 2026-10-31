@@ -18,6 +18,27 @@ local enter_normal = wezterm.action.ActivateKeyTable({ name = NORMAL, one_shot =
 local enter_insert = wezterm.action.ClearKeyTableStack
 local noop         = wezterm.action.DisableDefaultAssignment
 
+-- ── Shared constants ──────────────────────────────────────────────────────────
+
+-- All printable keys are swallowed in normal mode so they don't reach the shell.
+-- Specific keys override these with intentional actions.
+local SWALLOWED_KEYS = {
+	"a","b","c","d","e","f","g","h","i","j","k","l","m",
+	"n","o","p","q","r","s","t","u","v","w","x","y","z",
+	"A","B","C","D","E","F","G","H","I","J","K","L","M",
+	"N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
+	"1","2","3","4","5","6","7","8","9","0",
+	"`","~","!","@","#","$","%","^","&","*","(",")","_",
+	"+","=","[","]","{","}","\\","|",";","'",":",'"',
+	",",".","<",">","/","?","-"," ",
+}
+
+-- WezTerm sends some shifted combos as key=digit mods=SHIFT rather than the
+-- resulting symbol, so these need an explicit SHIFT entry to be swallowed too.
+local SWALLOWED_SHIFT = {
+	"1","2","3","4","5","6","7","8","9","0","-","=","[","]","\\",";","'",",",".","/"," ",
+}
+
 -- ── Shared mutable state ──────────────────────────────────────────────────────
 -- Plain Lua tables (not WezTerm objects), closed over by action_callbacks across
 -- mode files, so state can persist between keystrokes within a single config load.
@@ -37,6 +58,23 @@ local last_change = { run = nil }
 local function do_change(window, pane, fn)
 	last_change.run = fn
 	fn(window, pane)
+end
+
+--- Build an action that deletes to end/start of line and returns to normal mode.
+--- Uses readline CTRL+K (delete to EOL) and/or CTRL+U (delete to SOL).
+--- @param keys table  Array of action.SendKey tables (e.g. CTRL+K, CTRL+U)
+--- @return table      action_callback for use in key table
+local function delete_to_line_bound(keys)
+	return wezterm.action_callback(function(window, pane)
+		do_change(window, pane, function(w, p)
+			local actions = {}
+			for _, key_action in ipairs(keys) do
+				table.insert(actions, key_action)
+			end
+			table.insert(actions, enter_normal)
+			w:perform_action(wezterm.action.Multiple(actions), p)
+		end)
+	end)
 end
 
 --- Type or run a configured keymap's command in the pane.
@@ -174,6 +212,15 @@ function M.apply_to_config(config, opts)
 	config.keys       = config.keys or {}
 
 	-- shared context passed to each mode builder
+	-- Contract for mode implementers: each mode builder receives a ctx table with:
+	--   Mode names: NORMAL, DELETE, YANK, MOTION, REPLACE, KEYMAP, COUNT, JUMP
+	--   Shared actions: enter_normal, enter_insert, noop
+	--   Shared constants: SWALLOWED_KEYS, SWALLOWED_SHIFT (key arrays)
+	--   Shared helpers: delete_to_line_bound, do_change, execute_command
+	--   Config: should_run, kt_timeout, keymaps, jump_keys, jump_pattern, icon, left_status_prefix, starship
+	--   Mutable state: count_state, last_change (preserved across keystrokes within a config load)
+	--   Utilities: load (to load sibling files), pane_is_shell, nested_kts (key_tables array)
+	-- Modes export a function(ctx) that returns a key binding table for WezTerm.
 	local ctx
 	ctx = {
 		NORMAL          = NORMAL,
@@ -206,6 +253,9 @@ function M.apply_to_config(config, opts)
 		load            = load,
 		pane_is_shell   = pane_is_shell,
 		starship        = opts.starship,
+		SWALLOWED_KEYS  = SWALLOWED_KEYS,
+		SWALLOWED_SHIFT = SWALLOWED_SHIFT,
+		delete_to_line_bound = delete_to_line_bound,
 	}
 
 	-- status.lua first: it stashes ctx.render_jump_status, which jump.lua
@@ -256,5 +306,8 @@ end
 
 M.enter_normal = enter_normal
 M.enter_insert = enter_insert
+M.SWALLOWED_KEYS = SWALLOWED_KEYS
+M.SWALLOWED_SHIFT = SWALLOWED_SHIFT
+M.delete_to_line_bound = delete_to_line_bound
 
 return M

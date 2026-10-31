@@ -354,6 +354,10 @@ return function(ctx)
 		if cursor.y < zone.start_y or cursor.y > zone.end_y then
 			return -- cursor isn't on the input line right now
 		end
+		-- Validate cursor x is within reasonable bounds
+		if cursor.x < 0 then
+			return
+		end
 
 		local text = pane:get_text_from_semantic_zone(zone):gsub("%s+$", "")
 		local words = collect_words(text, jump_pattern)

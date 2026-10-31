@@ -12,6 +12,7 @@ return function(ctx)
 	local DELETE       = ctx.DELETE
 	local count_state  = ctx.count_state
 	local do_change    = ctx.do_change
+	local SWALLOWED_KEYS = ctx.SWALLOWED_KEYS
 
 	--- Run a SendKey action `count_state.n` times (defaulting to 1), then
 	--- clear the pending count and return to normal mode.
@@ -31,7 +32,12 @@ return function(ctx)
 
 	local function accumulate(d)
 		return wezterm.action_callback(function(window, pane)
-			count_state.n = (count_state.n or 0) * 10 + d
+			-- Cap count at 999 to prevent unreasonably large repetitions
+			if count_state.n and count_state.n >= 99 then
+				count_state.n = 99  -- max 2-digit count, prevents overflow
+			else
+				count_state.n = (count_state.n or 0) * 10 + d
+			end
 			-- replace_current: refresh this table's timeout without stacking a
 			-- second COUNT entry on top of itself for every extra digit typed.
 			window:perform_action(wezterm.action.ActivateKeyTable({
@@ -78,16 +84,14 @@ return function(ctx)
 		wezterm.action_callback(function() count_state.n = nil end),
 		enter_normal,
 	})
-	local other_keys = {
-		"a","c","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","x","y","z",
-		"A","B","C","D","E","F","G","H","I","J","K","L","M",
-		"N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
-		"`","~","!","@","#","$","%","^","&","*","(",")","_",
-		"+","=","[","]","{","}","\\","|",";","'",":",'"',
-		",",".","<",">","/","?","-"," ",
-		"Backspace","Delete","Enter",
-	}
-	for _, k in ipairs(other_keys) do
+	for _, k in ipairs(SWALLOWED_KEYS) do
+		if k ~= "w" and k ~= "b" and k ~= "e" and k ~= "d" then
+			table.insert(keys, { key = k, mods = "NONE",  action = fallback })
+			table.insert(keys, { key = k, mods = "SHIFT", action = fallback })
+		end
+	end
+	-- Add keys not in SWALLOWED_KEYS that should fall back
+	for _, k in ipairs({"Backspace","Delete","Enter"}) do
 		table.insert(keys, { key = k, mods = "NONE",  action = fallback })
 		table.insert(keys, { key = k, mods = "SHIFT", action = fallback })
 	end

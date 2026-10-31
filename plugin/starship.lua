@@ -32,6 +32,8 @@ return function(opts, deps)
 		if not handle then
 			return false
 		end
+		-- write() returns self for chaining, or may fail silently
+		-- Errors only show up when close fails, so just proceed normally
 		handle:write(text)
 		handle:close()
 		return rename_file(temporary_path, path) ~= nil

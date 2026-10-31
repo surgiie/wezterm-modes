@@ -274,3 +274,74 @@ vim_modes.apply_to_config(config, {
 ## Shell integration
 
 Required for `yy`, `yd`, `^`, and `J`. These operations use WezTerm's semantic zones to locate the current input line, which requires shell integration to be sourced. See the [WezTerm shell integration docs](https://wezterm.org/shell-integration.html) for setup instructions.
+
+### Zsh Setup
+
+Add the following to your `.zshrc` to enable the plugin's mode display in your starship prompt:
+
+```zsh
+# wezterm-modes sends \e[9001~ on mode change so starship can show the new mode.
+if [[ -n $WEZTERM_PANE ]]; then
+    wezterm-modes-redraw() { zle reset-prompt }
+    zle -N wezterm-modes-redraw
+    bindkey $'\e[9001~' wezterm-modes-redraw
+
+    # Report "at prompt" only once zle is reading input; precmd is too early
+    # (other precmd work still runs and the tty is not reading yet).
+    wezterm-modes-prompt-state() { printf '\e]1337;SetUserVar=wezterm_modes_prompt=%s\a' "$1" }
+    wezterm-modes-line-init() { wezterm-modes-prompt-state MQ== }
+    wezterm-modes-line-finish() { wezterm-modes-prompt-state MA== }
+    wezterm-modes-prompt-preexec() { wezterm-modes-prompt-state MA== }
+    autoload -Uz add-zle-hook-widget
+    add-zle-hook-widget line-init wezterm-modes-line-init
+    add-zle-hook-widget line-finish wezterm-modes-line-finish
+    preexec_functions+=(wezterm-modes-prompt-preexec)
+fi
+```
+
+**With vi keybindings:** If you use zsh's vi keybindings, also add the bindings to the `viins` and `vicmd` keymaps:
+
+```zsh
+bindkey -M viins $'\e[9001~' wezterm-modes-redraw
+bindkey -M vicmd $'\e[9001~' wezterm-modes-redraw
+```
+
+### Starship Configuration
+
+To display the mode in your starship prompt, add custom modules to your `starship.toml`:
+
+```toml
+[custom.wezterm_normal]
+when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = NORMAL ]'
+format = '[ NORMAL ](bg:#1c1c1c fg:#a4e400 bold)'
+
+[custom.wezterm_insert]
+when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = INSERT ]'
+format = '[ INSERT ](bg:#1c1c1c fg:#5fafd7 bold)'
+
+[custom.wezterm_visual]
+when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = VISUAL ]'
+format = '[ VISUAL ](bg:#1c1c1c fg:#e0a060 bold)'
+
+[custom.wezterm_keymap]
+when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = KEYMAP ]'
+format = '[ KEYMAP ](bg:#1c1c1c fg:#c792ea bold)'
+
+[custom.wezterm_jump]
+when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = JUMP ]'
+format = '[ JUMP ](bg:#1c1c1c fg:#ff5555 bold)'
+
+# Optional: show the label:word legend while a jump is in progress
+[custom.wezterm_jump_legend]
+when = 'test -s "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE.jump"'
+command = 'read -r legend < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE.jump"; printf %s "$legend"'
+format = '[ $output ](bg:#1c1c1c fg:#d0d0d0)'
+```
+
+Add these modules to your format string:
+
+```toml
+format = """${custom.wezterm_normal}${custom.wezterm_insert}${custom.wezterm_visual}${custom.wezterm_keymap}${custom.wezterm_jump}${custom.wezterm_jump_legend}$directory$character"""
+```
+
+**Note:** Use `;` instead of `&&` in the `when` conditions. The state file has no trailing newline, so `read` exits non-zero even on success.

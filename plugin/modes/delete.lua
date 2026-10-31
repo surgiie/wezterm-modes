@@ -10,6 +10,7 @@ return function(ctx)
 	local noop         = ctx.noop
 	local count_state  = ctx.count_state
 	local do_change    = ctx.do_change
+	local delete_to_line_bound = ctx.delete_to_line_bound
 
 	--- Delete word forward/backward, repeated by any pending numeric prefix
 	--- (e.g. the "3" in "3dw"), then clear the count and return to normal.
@@ -57,65 +58,16 @@ return function(ctx)
 		end) },
 
 		-- d$: delete to end of line (readline CTRL+K)
-		{ key = "$", mods = "NONE",  action = wezterm.action_callback(function(window, pane)
-			do_change(window, pane, function(w, p)
-				w:perform_action(wezterm.action.Multiple({
-					wezterm.action.SendKey({ key = "k", mods = "CTRL" }),
-					enter_normal,
-				}), p)
-			end)
-		end) },
-		{ key = "$", mods = "SHIFT", action = wezterm.action_callback(function(window, pane)
-			do_change(window, pane, function(w, p)
-				w:perform_action(wezterm.action.Multiple({
-					wezterm.action.SendKey({ key = "k", mods = "CTRL" }),
-					enter_normal,
-				}), p)
-			end)
-		end) },
-		{ key = "4", mods = "SHIFT", action = wezterm.action_callback(function(window, pane)
-			do_change(window, pane, function(w, p)
-				w:perform_action(wezterm.action.Multiple({
-					wezterm.action.SendKey({ key = "k", mods = "CTRL" }),
-					enter_normal,
-				}), p)
-			end)
-		end) },
+		{ key = "$", mods = "NONE",  action = delete_to_line_bound({ wezterm.action.SendKey({ key = "k", mods = "CTRL" }) }) },
+		{ key = "$", mods = "SHIFT", action = delete_to_line_bound({ wezterm.action.SendKey({ key = "k", mods = "CTRL" }) }) },
+		{ key = "4", mods = "SHIFT", action = delete_to_line_bound({ wezterm.action.SendKey({ key = "k", mods = "CTRL" }) }) },
 
 		-- d0: delete to start of line (readline CTRL+U)
-		{ key = "0", mods = "NONE", action = wezterm.action_callback(function(window, pane)
-			do_change(window, pane, function(w, p)
-				w:perform_action(wezterm.action.Multiple({
-					wezterm.action.SendKey({ key = "u", mods = "CTRL" }),
-					enter_normal,
-				}), p)
-			end)
-		end) },
+		{ key = "0", mods = "NONE", action = delete_to_line_bound({ wezterm.action.SendKey({ key = "u", mods = "CTRL" }) }) },
 
 		-- d^: delete to first non-whitespace (readline CTRL+U then re-type leading whitespace)
-		{ key = "^", mods = "NONE",  action = wezterm.action_callback(function(window, pane)
-			do_change(window, pane, function(w, p)
-				w:perform_action(wezterm.action.Multiple({
-					wezterm.action.SendKey({ key = "u", mods = "CTRL" }),
-					enter_normal,
-				}), p)
-			end)
-		end) },
-		{ key = "^", mods = "SHIFT", action = wezterm.action_callback(function(window, pane)
-			do_change(window, pane, function(w, p)
-				w:perform_action(wezterm.action.Multiple({
-					wezterm.action.SendKey({ key = "u", mods = "CTRL" }),
-					enter_normal,
-				}), p)
-			end)
-		end) },
-		{ key = "6", mods = "SHIFT", action = wezterm.action_callback(function(window, pane)
-			do_change(window, pane, function(w, p)
-				w:perform_action(wezterm.action.Multiple({
-					wezterm.action.SendKey({ key = "u", mods = "CTRL" }),
-					enter_normal,
-				}), p)
-			end)
-		end) },
+		{ key = "^", mods = "NONE",  action = delete_to_line_bound({ wezterm.action.SendKey({ key = "u", mods = "CTRL" }) }) },
+		{ key = "^", mods = "SHIFT", action = delete_to_line_bound({ wezterm.action.SendKey({ key = "u", mods = "CTRL" }) }) },
+		{ key = "6", mods = "SHIFT", action = delete_to_line_bound({ wezterm.action.SendKey({ key = "u", mods = "CTRL" }) }) },
 	}
 end

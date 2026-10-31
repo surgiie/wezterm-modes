@@ -1,24 +1,5 @@
 local wezterm = require("wezterm")
 
--- All printable keys are swallowed in normal mode so they don't reach the shell.
--- Specific keys below override these no-ops with intentional actions.
-local swallowed = {
-	"a","b","c","d","e","f","g","h","i","j","k","l","m",
-	"n","o","p","q","r","s","t","u","v","w","x","y","z",
-	"A","B","C","D","E","F","G","H","I","J","K","L","M",
-	"N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
-	"1","2","3","4","5","6","7","8","9","0",
-	"`","~","!","@","#","$","%","^","&","*","(",")","_",
-	"+","=","[","]","{","}","\\","|",";","'",":",'"',
-	",",".","<",">","/","?","-"," ",
-}
-
--- WezTerm sends some shifted combos as key=digit mods=SHIFT rather than the
--- resulting symbol, so these need an explicit SHIFT entry to be swallowed too.
-local swallowed_shift = {
-	"1","2","3","4","5","6","7","8","9","0","-","=","[","]","\\",";","'",",",".","/"," ",
-}
-
 local function goto_first_non_whitespace(window, pane)
 	local zones = pane:get_semantic_zones("Input")
 	local leading = 0
@@ -54,6 +35,8 @@ return function(ctx)
 	local last_change     = ctx.last_change
 	local do_change       = ctx.do_change
 	local jump            = ctx.jump
+	local SWALLOWED_KEYS  = ctx.SWALLOWED_KEYS
+	local SWALLOWED_SHIFT = ctx.SWALLOWED_SHIFT
 
 	local function open_keymap_picker(window, pane)
 		if not should_run(pane) then return end
@@ -83,11 +66,11 @@ return function(ctx)
 
 	local keys = {}
 
-	for _, k in ipairs(swallowed) do
+	for _, k in ipairs(SWALLOWED_KEYS) do
 		table.insert(keys, { key = k, mods = "NONE",  action = noop })
 		table.insert(keys, { key = k, mods = "SHIFT", action = noop })
 	end
-	for _, k in ipairs(swallowed_shift) do
+	for _, k in ipairs(SWALLOWED_SHIFT) do
 		table.insert(keys, { key = k, mods = "SHIFT", action = noop })
 	end
 
