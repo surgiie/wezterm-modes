@@ -188,8 +188,9 @@ end
 ---                              starship custom module (omit to disable):
 ---                              { state_dir? = "$XDG_RUNTIME_DIR/wezterm-modes",
 ---                                badge? = true  -- false hides the left-status mode badge at shell prompts
----                                redraw_sequence? = "\27[9001~"  -- sent to the shell when the
----                                  mode changes so it can reset its prompt; false disables }
+---                                redraw? = true  -- SIGUSR1 a zsh at its prompt when the
+---                                  mode changes so a TRAPUSR1 can reset the prompt;
+---                                  false disables }
 ---   - keymaps          table[]  Keymap-mode bindings (omit to disable keymap mode)
 ---                                Each entry: { key, description, command, execute?, confirm? }
 ---   - jump_keys        string  Label alphabet for `J` (word-jump), most-reachable

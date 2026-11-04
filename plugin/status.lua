@@ -11,9 +11,11 @@ local COLORS = {
 	block   = "#1c1c1c",
 }
 
-local DEFAULT_REDRAW_SEQUENCE = "\27[9001~"
+local REDRAW_SIGNAL = "USR1"
+local SIGNAL_TARGET_SHELL = "zsh"
 local PROMPT_USER_VAR = "wezterm_modes_prompt"
 local COMMAND_SETTLE_SECONDS = 2
+local OVERLAY_KEY_TABLES = { copy_mode = true, search_mode = true }
 
 --- Register the update-status event handler that drives the mode status bar.
 --- Active key table name determines the displayed mode label.
@@ -41,10 +43,7 @@ return function(ctx)
 	local starship_opts = ctx.starship
 	local state_publisher = starship_opts and ctx.load("starship.lua")(starship_opts) or nil
 	local badge_enabled = not (starship_opts and starship_opts.badge == false)
-	local redraw_sequence = nil
-	if starship_opts and starship_opts.redraw_sequence ~= false then
-		redraw_sequence = starship_opts.redraw_sequence or DEFAULT_REDRAW_SEQUENCE
-	end
+	local redraw_enabled = starship_opts ~= nil and starship_opts.redraw ~= false
 
 	local LABEL_COLORS = {
 		LEADER = COLORS.leader,
@@ -143,16 +142,40 @@ return function(ctx)
 
 	local redraw_pending = {}
 
-	--- Send the redraw now if the pane is at a prompt, otherwise leave it
+	--- Copy mode and its search bar are overlays on the pane. The badge stays
+	--- visible there because the shell prompt underneath is not what is shown.
+	local function in_overlay(window)
+		return OVERLAY_KEY_TABLES[window:active_key_table()] == true
+	end
+
+	--- Signal the pane's foreground shell so it redraws its prompt. Nothing is
+	--- typed into the pane, so an overlay or a half-read escape sequence cannot
+	--- swallow it. Only a zsh is signalled: SIGUSR1 terminates any process
+	--- without a handler.
+	--- @return boolean  true if a signal was sent
+	local function signal_shell(pane)
+		local info_ok, info = pcall(function() return pane:get_foreground_process_info() end)
+		if not info_ok or type(info) ~= "table" or not info.pid then
+			return false
+		end
+		local executable = info.executable or info.name or ""
+		if executable:match("[^/]*$") ~= SIGNAL_TARGET_SHELL then
+			return false
+		end
+		wezterm.background_child_process({ "kill", "-" .. REDRAW_SIGNAL, tostring(info.pid) })
+		return true
+	end
+
+	--- Signal the shell now if the pane is at a prompt, otherwise leave it
 	--- pending so a later tick delivers it instead of losing it.
 	local function request_redraw(window, pane)
-		if not redraw_sequence then
+		if not redraw_enabled then
 			return
 		end
 		local pane_id = pane:pane_id()
-		if at_shell(pane) then
+		if at_shell(pane) and signal_shell(pane) then
+			trace(pane, "signal_sent", tostring(clock()) .. "." .. tostring(math.random(1e6)))
 			redraw_pending[pane_id] = nil
-			window:perform_action(wezterm.action.SendString(redraw_sequence), pane)
 		else
 			redraw_pending[pane_id] = true
 		end
@@ -168,7 +191,7 @@ return function(ctx)
 	--- the badge is disabled and the pane is at a shell prompt (starship shows
 	--- the mode there; other panes such as a REPL keep the badge).
 	local function show_badge(window, pane, rendered)
-		local hidden = not badge_enabled and at_shell(pane)
+		local hidden = not badge_enabled and at_shell(pane) and not in_overlay(window)
 		window:set_left_status(hidden and prefix(pane) or rendered)
 	end
 
@@ -185,24 +208,6 @@ return function(ctx)
 			request_redraw(window, pane)
 		else
 			flush_pending_redraw(window, pane)
-		end
-	end
-
-	--- jump.lua's hooks for showing the legend in the prompt. No-ops without
-	--- starship opts. The redraw is gated like publish_mode's.
-	ctx.publish_legend = function(window, pane, text)
-		if not state_publisher then
-			return
-		end
-		local changed = state_publisher.publish_legend(pane:pane_id(), text)
-		if changed then
-			request_redraw(window, pane)
-		end
-	end
-
-	ctx.clear_legend = function(pane)
-		if state_publisher then
-			state_publisher.clear_legend(pane:pane_id())
 		end
 	end
 

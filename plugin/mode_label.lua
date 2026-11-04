@@ -18,7 +18,7 @@ return function(ctx)
 			return "LEADER"
 		elseif key_table == NORMAL then
 			return "NORMAL"
-		elseif key_table == "copy_mode" then
+		elseif key_table == "copy_mode" or key_table == "search_mode" then
 			return "VISUAL"
 		elseif key_table == YANK or key_table == DELETE or key_table == COUNT
 			or key_table == MOTION or key_table == REPLACE then

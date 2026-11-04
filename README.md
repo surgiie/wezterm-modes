@@ -105,22 +105,34 @@ Show the current mode in your [starship](https://starship.rs) prompt instead of 
 How it works:
 
 1. The plugin writes the mode label (e.g. `NORMAL`) to `$XDG_RUNTIME_DIR/wezterm-modes/<pane_id>` whenever it changes (`/tmp` if `XDG_RUNTIME_DIR` is unset).
-2. It then sends the shell a private escape sequence (`ESC [ 9001 ~`) so the shell redraws its prompt. This is only sent when the pane's foreground process is a shell that is at its prompt, never to a TUI, REPL or running command. A redraw that couldn't be sent is retried on a later tick.
+2. It then sends `SIGUSR1` to the pane's foreground shell so it redraws its prompt. Nothing is typed into the pane, so copy mode, its search bar, and half-read escape sequences are unaffected. The signal is only sent when the foreground process is a `zsh` that is at its prompt, never to a TUI, REPL or running command (SIGUSR1 kills a process that has no handler). A redraw that couldn't be sent is retried on a later tick.
 3. A starship custom module reads the file for the shell's own pane (`$WEZTERM_PANE`).
 
 Setup takes three pieces, and the shell binding should be in place before you enable the plugin option.
 
 #### 1. Shell binding (zsh)
 
-Bind the sequence to a widget that resets the prompt:
+Add a `USR1` trap that resets the prompt:
 
 ```zsh
-wezterm-modes-redraw() { zle reset-prompt }
-zle -N wezterm-modes-redraw
-bindkey $'\e[9001~' wezterm-modes-redraw
+wezterm-modes-state() {
+    local state_dir=${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes
+    [[ -r $state_dir/$WEZTERM_PANE ]] && print -r -- "$(<$state_dir/$WEZTERM_PANE)"
+}
+TRAPUSR1() {
+    zle || return
+    local state_before state_after
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        state_before=$(wezterm-modes-state)
+        zle reset-prompt
+        state_after=$(wezterm-modes-state)
+        [[ $state_before == $state_after ]] && break
+    done
+}
 ```
 
-With zsh's vi keymaps, also bind it in `viins` and `vicmd` (`bindkey -M viins ...`). Without a binding the shell prints the sequence's trailing characters at the prompt; set `redraw_sequence = false` if you don't want a redraw at all.
+zsh drops a `USR1` that arrives while the trap is still running, so a plain `zle reset-prompt` can leave a stale label after two quick mode changes. The loop re-reads the state file around each redraw and repeats until it stops changing. Without a trap, zsh's default action for `USR1` terminates the shell; set `redraw = false` if you don't want a redraw at all.
 
 Also have the shell report whether it is at its prompt, so the redraw is never sent into a running command (e.g. an fzf launched by a bash script) and is retried once the prompt returns:
 
@@ -135,7 +147,7 @@ add-zle-hook-widget line-finish wezterm-modes-line-finish
 preexec_functions+=(wezterm-modes-prompt-preexec)
 ```
 
-(`MQ==` and `MA==` are `1` and `0` in base64.) Report from the zle hooks rather than `precmd`: `precmd` runs before the shell is reading input, so a redraw sent in that window is echoed by the tty and ends up as literal `[9001~` in the line.
+(`MQ==` and `MA==` are `1` and `0` in base64.) Report from the zle hooks rather than `precmd`: `precmd` runs before zle is reading input, and a signal in that window finds no active line editor.
 
 This is required for the redraw: a pane is only treated as being at a prompt once its shell has reported `1`, so nothing is sent while the shell is still loading its rc files or while a command runs. Until then the badge stays visible even with `badge = false`.
 
@@ -145,7 +157,7 @@ Starship can't change a style based on a command's output, so use one module per
 
 ```toml
 format = """
-${custom.wezterm_normal}${custom.wezterm_insert}${custom.wezterm_visual}${custom.wezterm_keymap}${custom.wezterm_leader}${custom.wezterm_jump}${custom.wezterm_jump_legend}$directory$character"""
+${custom.wezterm_normal}${custom.wezterm_insert}${custom.wezterm_visual}${custom.wezterm_keymap}${custom.wezterm_leader}${custom.wezterm_jump}$directory$character"""
 
 [custom.wezterm_normal]
 when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = NORMAL ]'
@@ -170,16 +182,11 @@ format = '[ LEADER ](bg:#1c1c1c fg:#ffff87 bold)'
 [custom.wezterm_jump]
 when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = JUMP ]'
 format = '[ JUMP ](bg:#1c1c1c fg:#ff5555 bold)'
-
-[custom.wezterm_jump_legend]
-when = 'test -s "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE.jump"'
-command = 'read -r legend < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE.jump"; printf %s "$legend"'
-format = '[ $output ](bg:#1c1c1c fg:#d0d0d0)'
 ```
 
 Use `;` rather than `&&` after `read`: the state file has no trailing newline, so `read` exits non-zero even though it sets `mode`. Outside WezTerm (or with no state file) every module is hidden.
 
-`wezterm_jump_legend` is optional. While a `J` pick is in progress the plugin also writes the `label:word` legend to `<pane_id>.jump` next to the state file and redraws the prompt as the legend narrows, so the hints show beside the JUMP block as well as in the WezTerm status bar. The file is removed when the pick ends.
+The `label:word` hints for a `J` pick are shown only in the WezTerm status bar, not in the prompt.
 
 #### 3. Plugin option
 
@@ -188,7 +195,7 @@ vim_modes.apply_to_config(config, {
     starship = {
         badge = false,                          -- hide the left-status badge at shell prompts (default: true)
         -- state_dir = "/some/dir",             -- default: $XDG_RUNTIME_DIR/wezterm-modes
-        -- redraw_sequence = "\27[9001~",       -- or false to skip the prompt redraw
+        -- redraw = false,                      -- skip the SIGUSR1 prompt redraw (default: true)
         -- debug = true,                        -- log per-pane active/at_shell/label changes (WezTerm debug overlay, Ctrl+Shift+L)
     },
 })
@@ -280,11 +287,23 @@ Required for `yy`, `yd`, `^`, and `J`. These operations use WezTerm's semantic z
 Add the following to your `.zshrc` to enable the plugin's mode display in your starship prompt:
 
 ```zsh
-# wezterm-modes sends \e[9001~ on mode change so starship can show the new mode.
+# wezterm-modes sends SIGUSR1 on mode change so starship can show the new mode.
 if [[ -n $WEZTERM_PANE ]]; then
-    wezterm-modes-redraw() { zle reset-prompt }
-    zle -N wezterm-modes-redraw
-    bindkey $'\e[9001~' wezterm-modes-redraw
+    wezterm-modes-state() {
+        local state_dir=${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes
+        [[ -r $state_dir/$WEZTERM_PANE ]] && print -r -- "$(<$state_dir/$WEZTERM_PANE)"
+    }
+    TRAPUSR1() {
+        zle || return
+        local state_before state_after
+        local attempt
+        for attempt in 1 2 3 4 5; do
+            state_before=$(wezterm-modes-state)
+            zle reset-prompt
+            state_after=$(wezterm-modes-state)
+            [[ $state_before == $state_after ]] && break
+        done
+    }
 
     # Report "at prompt" only once zle is reading input; precmd is too early
     # (other precmd work still runs and the tty is not reading yet).
@@ -299,12 +318,7 @@ if [[ -n $WEZTERM_PANE ]]; then
 fi
 ```
 
-**With vi keybindings:** If you use zsh's vi keybindings, also add the bindings to the `viins` and `vicmd` keymaps:
-
-```zsh
-bindkey -M viins $'\e[9001~' wezterm-modes-redraw
-bindkey -M vicmd $'\e[9001~' wezterm-modes-redraw
-```
+The trap works in every keymap, including zsh's vi keymaps, so no per-keymap bindings are needed.
 
 ### Starship Configuration
 
@@ -330,18 +344,12 @@ format = '[ KEYMAP ](bg:#1c1c1c fg:#c792ea bold)'
 [custom.wezterm_jump]
 when = 'read -r mode 2>/dev/null < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE"; [ "$mode" = JUMP ]'
 format = '[ JUMP ](bg:#1c1c1c fg:#ff5555 bold)'
-
-# Optional: show the label:word legend while a jump is in progress
-[custom.wezterm_jump_legend]
-when = 'test -s "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE.jump"'
-command = 'read -r legend < "${XDG_RUNTIME_DIR:-/tmp}/wezterm-modes/$WEZTERM_PANE.jump"; printf %s "$legend"'
-format = '[ $output ](bg:#1c1c1c fg:#d0d0d0)'
 ```
 
 Add these modules to your format string:
 
 ```toml
-format = """${custom.wezterm_normal}${custom.wezterm_insert}${custom.wezterm_visual}${custom.wezterm_keymap}${custom.wezterm_jump}${custom.wezterm_jump_legend}$directory$character"""
+format = """${custom.wezterm_normal}${custom.wezterm_insert}${custom.wezterm_visual}${custom.wezterm_keymap}${custom.wezterm_jump}$directory$character"""
 ```
 
 **Note:** Use `;` instead of `&&` in the `when` conditions. The state file has no trailing newline, so `read` exits non-zero even on success.
