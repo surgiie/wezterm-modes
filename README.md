@@ -10,7 +10,7 @@ A WezTerm plugin that gives your terminal a vim-like editing experience.
 | NORMAL  | Green            | `Escape` | Vim-like editing; all keybindings active |
 | VISUAL  | Amber            | `v` from normal | WezTerm's built-in copy mode; press `v` again inside to begin selection |
 | KEYMAP  | Purple           | `:` from normal | Listens for one configured keymap key, then runs it and returns to insert |
-| JUMP    | Red              | `J` from normal | Label-jump pick; left status shows the label:word legend until you type one |
+| JUMP    | Red              | `J` from normal | Label-jump pick; labels are painted over the line's tokens until you type one |
 
 ## Normal mode bindings
 
@@ -39,7 +39,7 @@ Numeric prefixes (`1`-`9`, then any further digits) only apply to word motions a
 
 #### Jumping
 
-Switch to "jump" mode from normal mode via `J` key. This mode is useful for quickly moving the cursor to a specific token on the current line. This mode will update the left status bar with a legend of labels corresponding to each token on the current line, e.g the left status bar will display something like `JUMP  f:kubectl  j:exec  d:example-app  s:-it  a:--  l:bash` which allow you to move the cursor to the start of a selected token by typing the corresponding label key. In this example, typing `d` will move the cursor to the start of `example-app`.
+Switch to "jump" mode from normal mode via `J` key. This mode is useful for quickly moving the cursor to a specific token on the current line. This mode paints a label over the first characters of each token on the current line. Typing a label moves the cursor to the start of that token, e.g. typing `d` over the label painted on `example-app` jumps to it.
 
 
 ### Editing
@@ -186,7 +186,7 @@ format = '[ JUMP ](bg:#1c1c1c fg:#ff5555 bold)'
 
 Use `;` rather than `&&` after `read`: the state file has no trailing newline, so `read` exits non-zero even though it sets `mode`. Outside WezTerm (or with no state file) every module is hidden.
 
-The `label:word` hints for a `J` pick are shown only in the WezTerm status bar, not in the prompt.
+The `J` pick draws its labels over the text in the terminal, not in the prompt or the status bar. The prompt keeps its previous mode label during a pick and refreshes when it ends.
 
 #### 3. Plugin option
 
@@ -196,7 +196,6 @@ vim_modes.apply_to_config(config, {
         badge = false,                          -- hide the left-status badge at shell prompts (default: true)
         -- state_dir = "/some/dir",             -- default: $XDG_RUNTIME_DIR/wezterm-modes
         -- redraw = false,                      -- skip the SIGUSR1 prompt redraw (default: true)
-        -- debug = true,                        -- log per-pane active/at_shell/label changes (WezTerm debug overlay, Ctrl+Shift+L)
     },
 })
 

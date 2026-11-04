@@ -21,7 +21,7 @@ local OVERLAY_KEY_TABLES = { copy_mode = true, search_mode = true }
 --- Active key table name determines the displayed mode label.
 ---
 --- Also stashes `ctx.render_jump_status`, a pane->text renderer jump.lua uses
---- to paint its label:word legend directly into the left status.
+--- to paint the JUMP badge directly into the left status.
 ---
 --- @param ctx table  Plugin context:
 ---   - NORMAL     string    Normal mode key table name
@@ -29,7 +29,7 @@ local OVERLAY_KEY_TABLES = { copy_mode = true, search_mode = true }
 ---                         status (via ctx.render_jump_status) instead of
 ---                         the plain mode block below; this handler skips
 ---                         the left status while a pick is in progress so
----                         it can't stomp that legend mid-pick.
+---                         it can't stomp that badge mid-pick.
 ---   - should_run function  function(pane) → boolean; false = plugin is no-op for this pane
 ---   - left_status_prefix function(pane) → string?  Caller-supplied decoration
 ---                         prepended to every left-status render; this module
@@ -77,22 +77,6 @@ return function(ctx)
 		})
 	end
 
-	local debug_enabled = starship_opts and starship_opts.debug == true
-	local last_trace = {}
-
-	--- Logs only when a value changes for a pane, so the log stays readable at
-	--- the update-status rate.
-	local function trace(pane, name, value)
-		if not debug_enabled or not wezterm.log_info then
-			return
-		end
-		local key = tostring(pane:pane_id()) .. ":" .. name
-		if last_trace[key] ~= value then
-			last_trace[key] = value
-			wezterm.log_info(string.format("wezterm-modes pane=%s %s=%s", tostring(pane:pane_id()), name, tostring(value)))
-		end
-	end
-
 	local clock = ctx.clock or os.time
 	local commands_in_flight = {}
 
@@ -136,7 +120,6 @@ return function(ctx)
 			local settled = command_settled(pane, prompt_value)
 			result = prompt_value == "1" and settled
 		end
-		trace(pane, "at_shell", result)
 		return result
 	end
 
@@ -174,7 +157,6 @@ return function(ctx)
 		end
 		local pane_id = pane:pane_id()
 		if at_shell(pane) and signal_shell(pane) then
-			trace(pane, "signal_sent", tostring(clock()) .. "." .. tostring(math.random(1e6)))
 			redraw_pending[pane_id] = nil
 		else
 			redraw_pending[pane_id] = true
@@ -199,11 +181,14 @@ return function(ctx)
 	--- the shell to redraw its prompt. should_run can be true for non-shell
 	--- panes (callers may allow e.g. a REPL), so the sequence is additionally
 	--- gated on ctx.pane_is_shell to keep it out of TUIs.
-	local function publish_mode(window, pane, label)
+	local function publish_mode(window, pane, label, skip_redraw)
 		if not state_publisher then
 			return
 		end
 		local changed = state_publisher.publish(pane:pane_id(), label)
+		if skip_redraw then
+			return
+		end
 		if changed then
 			request_redraw(window, pane)
 		else
@@ -212,33 +197,30 @@ return function(ctx)
 	end
 
 	-- jump.lua's entry point into this module's rendering: the same colored
-	-- " JUMP " badge as every other mode, then ResetAttributes hands back to
-	-- default styling for the legend text that follows (jump.lua separately
-	-- blanks every tab title for the same duration, so this lands in an
-	-- otherwise-empty tab bar).
-	ctx.render_jump_status = function(pane, legend)
+	-- " JUMP " badge as every other mode.
+	ctx.render_jump_status = function(pane)
 		return prefix(pane) .. wezterm.format({
 			{ Background = { Color = COLORS.block } },
 			{ Foreground = { Color = COLORS.jump } },
 			{ Attribute = { Intensity = "Bold" } },
 			{ Text = " JUMP " },
 			"ResetAttributes",
-			{ Text = legend ~= "" and ("  " .. legend .. " ") or "" },
 		})
 	end
 
 	wezterm.on("update-status", function(window, pane)
 		local kt = window:active_key_table()
 		local active = should_run(pane)
-		trace(pane, "active", active)
 
 		-- Skip the left status while a jump pick is in progress — jump.lua
-		-- paints its own legend there directly, and this handler would
+		-- paints its own badge there directly, and this handler would
 		-- otherwise stomp it. Gated on ctx.jump_state.targets rather than
 		-- `kt == JUMP`, since ActivateKeyTable only enqueues the switch and
 		-- active_key_table() can briefly still report the old table.
 		if active and ctx.jump_state and ctx.jump_state.targets then
-			publish_mode(window, pane, "JUMP")
+			-- No redraw: it would reset the line and wipe the in-line labels.
+			-- Leaving JUMP changes the label again and redraws then.
+			publish_mode(window, pane, "JUMP", true)
 			return
 		end
 
@@ -260,7 +242,6 @@ return function(ctx)
 		end
 
 		local label = resolve_label(kt, window:leader_is_active())
-		trace(pane, "label", label)
 		publish_mode(window, pane, label)
 
 		if label == "JUMP" then

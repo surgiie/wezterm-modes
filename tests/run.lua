@@ -346,6 +346,22 @@ test("redraw: signal is sent once per mode change, not on unchanged ticks", func
 	assert_equal(#signals_sent, 2)
 end)
 
+test("redraw: entering a jump pick sends no signal, leaving it does", function()
+	local jump_state = { targets = nil }
+	local handler = load_status({ starship = { state_dir = "/state" }, jump_state = jump_state })
+	handler(fake_window("normal_mode"), fake_pane(5))
+	assert_equal(#signals_sent, 1)
+
+	jump_state.targets = { f = 0 }
+	handler(fake_window("jump_mode"), fake_pane(5))
+	handler(fake_window("jump_mode"), fake_pane(5))
+	assert_equal(#signals_sent, 1)
+
+	jump_state.targets = nil
+	handler(fake_window("normal_mode"), fake_pane(5))
+	assert_equal(#signals_sent, 2)
+end)
+
 test("redraw: entering copy mode signals the shell once and types nothing into the pane", function()
 	local handler = load_status({ starship = { state_dir = "/state" } })
 	handler(fake_window("normal_mode"), fake_pane(5))
@@ -612,7 +628,7 @@ local function load_jump()
 	local ctx = {
 		JUMP = "jump_mode",
 		enter_normal = "enter_normal",
-		render_jump_status = function(_, legend) return legend end,
+		render_jump_status = function() return " JUMP " end,
 	}
 	return dofile("plugin/jump.lua")(ctx), ctx
 end
@@ -625,6 +641,8 @@ local function jump_pane(pane_id)
 		get_cursor_position = function() return { x = 0, y = 0 } end,
 		get_text_from_semantic_zone = function() return "kubectl exec" end,
 		get_dimensions = function() return { cols = 80 } end,
+		injected = {},
+		inject_output = function(self, sequence) self.injected[#self.injected + 1] = sequence end,
 	}
 end
 
@@ -634,11 +652,135 @@ local function key_callback(jump, key)
 	end
 end
 
-test("jump: the legend is painted in the status bar", function()
+test("jump: collect_words counts characters, not bytes", function()
+	local jump = load_jump()
+	local words = jump.collect_words("echo caf\195\169 \226\149\176\226\148\128\226\158\164 end")
+	assert_equal(#words, 4)
+	assert_equal(words[2].col, 5)
+	assert_equal(words[2].length, 4)
+	assert_equal(words[3].col, 10)
+	assert_equal(words[3].length, 3)
+	assert_equal(words[4].col, 14)
+end)
+
+test("jump: collect_words honours a custom pattern and ignores blank lines", function()
+	local jump = load_jump()
+	local words = jump.collect_words("a-b c_d", "[%w_]+")
+	assert_equal(#words, 3)
+	assert_equal(words[3].text, "c_d")
+	assert_equal(#jump.collect_words("   "), 0)
+end)
+
+test("jump: screen_cell maps an offset on the zone's first row", function()
+	local jump = load_jump()
+	local row, column = jump.screen_cell({ start_x = 2, start_y = 4 }, 10, 80)
+	assert_equal(row, 4)
+	assert_equal(column, 12)
+end)
+
+test("jump: screen_cell wraps onto later rows", function()
+	local jump = load_jump()
+	local zone = { start_x = 5, start_y = 3 }
+	local row, column = jump.screen_cell(zone, 75, 80)
+	assert_equal(row, 4)
+	assert_equal(column, 0)
+	row, column = jump.screen_cell(zone, 160, 80)
+	assert_equal(row, 5)
+	assert_equal(column, 5)
+end)
+
+test("jump: opening paints a reverse-video label over each word", function()
+	local jump = load_jump()
+	local pane = jump_pane(1)
+	jump.open_word_jump(fake_window("normal_mode"), pane)
+	assert_equal(#pane.injected, 1)
+	assert_equal(
+		pane.injected[1],
+		"\0277\27[1;1H\27[7mf\27[0m\27[1;9H\27[7mj\27[0m\0278"
+	)
+end)
+
+test("jump: label_cells keeps the characters a label covers", function()
+	local jump = load_jump()
+	local words = jump.collect_words("ab cd", "%S+")
+	local characters = { "a", "b", " ", "c", "d" }
+	local zone = { start_x = 0, start_y = 2, end_y = 2 }
+	local cells = jump.label_cells(words, { "fj", "k" }, characters, zone, 80)
+	assert_equal(#cells, 3)
+	assert_equal(cells[1].original, "a")
+	assert_equal(cells[2].original, "b")
+	assert_equal(cells[2].column, 1)
+	assert_equal(cells[3].original, "c")
+	assert_equal(cells[3].row, 2)
+	assert_equal(jump.restore_sequence(cells), "\0277\27[3;1Ha\27[3;2Hb\27[3;4Hc\0278")
+end)
+
+test("jump: label_cells draws only labels matching the typed prefix, minus the prefix", function()
+	local jump = load_jump()
+	local words = jump.collect_words("ab cd ef", "%S+")
+	local characters = { "a", "b", " ", "c", "d", " ", "e", "f" }
+	local zone = { start_x = 0, start_y = 0, end_y = 0 }
+	local cells = jump.label_cells(words, { "k", "fj", "fd" }, characters, zone, 80, "f")
+	assert_equal(#cells, 2)
+	assert_equal(cells[1].label_character, "j")
+	assert_equal(cells[1].column, 3)
+	assert_equal(cells[2].label_character, "d")
+	assert_equal(cells[2].column, 6)
+end)
+
+test("jump: typing a prefix restores the old labels and draws the narrowed set", function()
+	local jump, ctx = load_jump()
+	local words = {}
+	for index = 1, 21 do
+		words[index] = string.char(96 + index)
+	end
+	local pane = jump_pane(1)
+	pane.get_text_from_semantic_zone = function() return table.concat(words, " ") end
+	local window = fake_window("normal_mode")
+	jump.open_word_jump(window, pane)
+	local long_label
+	for label in pairs(ctx.jump_state.targets) do
+		if #label == 2 then long_label = label end
+	end
+	assert_equal(long_label ~= nil, true)
+
+	key_callback(jump, long_label:sub(1, 1))(window, pane)
+	assert_equal(#pane.injected, 3)
+	assert_equal(pane.injected[2]:find("\27[7m", 1, true), nil)
+	local _, drawn = pane.injected[3]:gsub("\27%[7m", "")
+	local expected = 0
+	for label in pairs(ctx.jump_state.targets) do
+		if label:sub(1, 1) == long_label:sub(1, 1) and #label > 1 then expected = expected + 1 end
+	end
+	assert_equal(drawn, expected)
+
+	key_callback(jump, "Backspace")(window, pane)
+	assert_equal(#pane.injected, 5)
+end)
+
+test("jump: cancelling restores the covered characters", function()
+	local jump = load_jump()
+	local pane = jump_pane(1)
+	local window = fake_window("normal_mode")
+	jump.open_word_jump(window, pane)
+	key_callback(jump, "Escape")(window, pane)
+	assert_equal(pane.injected[2], "\0277\27[1;1Hk\27[1;9He\0278")
+end)
+
+test("jump: a pane without inject_output still opens", function()
+	local jump = load_jump()
+	local pane = jump_pane(1)
+	pane.inject_output = nil
+	local window = fake_window("normal_mode")
+	jump.open_word_jump(window, pane)
+	assert_equal(window.left_status, " JUMP ")
+end)
+
+test("jump: the status bar shows the badge only, with no label legend", function()
 	local jump = load_jump()
 	local window = fake_window("normal_mode")
 	jump.open_word_jump(window, jump_pane(1))
-	assert_equal(window.left_status:find("kubectl", 1, true) ~= nil, true)
+	assert_equal(window.left_status, " JUMP ")
 end)
 
 test("jump: nothing is written to prompt state while a pick starts, cancels or commits", function()
@@ -768,7 +910,7 @@ local function run_fuzz_sequence(seed)
 				violations[#violations + 1] = string.format(
 					"pane %d state file is %s, expected %s", pane_id, tostring(written), expected)
 			end
-			if last_signal_snapshot[pane_id] ~= written then
+			if written ~= "JUMP" and last_signal_snapshot[pane_id] ~= written then
 				violations[#violations + 1] = string.format(
 					"pane %d last signal saw %s but the file ended as %s",
 					pane_id, tostring(last_signal_snapshot[pane_id]), tostring(written))

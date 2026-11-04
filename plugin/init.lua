@@ -260,7 +260,7 @@ function M.apply_to_config(config, opts)
 	}
 
 	-- status.lua first: it stashes ctx.render_jump_status, which jump.lua
-	-- uses to paint its label legend into the left status.
+	-- uses to paint the JUMP badge into the left status.
 	load("status.lua")(ctx)
 	ctx.jump = load("jump.lua")(ctx)
 

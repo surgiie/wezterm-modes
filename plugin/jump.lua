@@ -86,8 +86,15 @@ end
 -- shell line's atoms are its whole space-separated tokens — "pod-edge-0" or
 -- "-it" are each one target, not several to pick between.
 
---- Collect { col, text } for every whitespace-separated token in `line`,
---- 0-indexed byte columns, in left-to-right order.
+local function character_count(text)
+	local _, count = text:gsub("[^\128-\191]", "")
+	return count
+end
+
+--- Collect { col, length, text } for every whitespace-separated token in
+--- `line`, in left-to-right order. Columns and lengths count characters, not
+--- bytes: the shell moves its cursor per character, and labels are painted
+--- per cell.
 --- @param line    string
 --- @param pattern string  Lua pattern selecting what counts as a token;
 ---                        default "%S+" (any non-blank run).
@@ -101,10 +108,28 @@ local function collect_words(line, pattern)
 		if not s then
 			break
 		end
-		words[#words + 1] = { col = s - 1, text = line:sub(s, e) }
+		local text = line:sub(s, e)
+		words[#words + 1] = {
+			col = character_count(line:sub(1, s - 1)),
+			length = character_count(text),
+			text = text,
+		}
 		col = e + 1
 	end
 	return words
+end
+
+--- Screen cell of a 0-indexed offset into an Input zone's flattened text.
+--- Inverse of linear_offset: the first row starts at zone.start_x, and every
+--- wrapped row after it starts at column 0.
+--- @param zone       table  Semantic zone (start_x, start_y, ...)
+--- @param offset     number 0-indexed offset into the zone's flattened text
+--- @param pane_width number Pane width in columns
+--- @return number row     0-indexed, viewport-relative
+--- @return number column  0-indexed
+local function screen_cell(zone, offset, pane_width)
+	local absolute = zone.start_x + offset
+	return zone.start_y + math.floor(absolute / pane_width), absolute % pane_width
 end
 
 --- Convert a screen position into a 0-indexed offset into an Input zone's
@@ -127,6 +152,73 @@ local function linear_offset(zone, y, x, pane_width)
 	return first_row_width + full_wrapped_rows + x
 end
 
+-- ── In-line label painting ────────────────────────────────────────────────────
+-- pane:inject_output feeds bytes to the terminal model as if the program had
+-- printed them, so nothing reaches the shell. Labels overwrite the first
+-- characters of their word in reverse video; the covered characters are kept
+-- so they can be written back.
+
+local ESC = "\27"
+local SAVE_CURSOR = ESC .. "7"
+local RESTORE_CURSOR = ESC .. "8"
+local REVERSE_VIDEO = ESC .. "[7m"
+local RESET_ATTRIBUTES = ESC .. "[0m"
+
+local function move_to(row, column)
+	return string.format("%s[%d;%dH", ESC, row + 1, column + 1)
+end
+
+--- One cell per label character: where it goes and what it covers.
+--- @param words            table[]  From collect_words
+--- @param label_by_idx     table    word index -> label string
+--- @param text_characters  string[] The zone's flattened text, one entry per character
+--- @param zone             table    Semantic zone
+--- @param pane_width       number
+--- @param prefix           string?  Typed so far; only matching labels are drawn, minus that prefix
+--- @return table[]  { row, column, label_character, original }
+local function label_cells(words, label_by_idx, text_characters, zone, pane_width, prefix)
+	prefix = prefix or ""
+	local cells = {}
+	for index, word in ipairs(words) do
+		local label = label_by_idx[index]
+		local position = 0
+		if label:sub(1, #prefix) ~= prefix then
+			goto continue
+		end
+		for label_character in label:sub(#prefix + 1):gmatch(UTF8) do
+			local offset = word.col + position
+			local row, column = screen_cell(zone, offset, pane_width)
+			cells[#cells + 1] = {
+				row = row,
+				column = column,
+				label_character = label_character,
+				original = text_characters[offset + 1] or " ",
+			}
+			position = position + 1
+		end
+		::continue::
+	end
+	return cells
+end
+
+local function paint_sequence(cells)
+	local parts = { SAVE_CURSOR }
+	for _, cell in ipairs(cells) do
+		parts[#parts + 1] = move_to(cell.row, cell.column) .. REVERSE_VIDEO .. cell.label_character .. RESET_ATTRIBUTES
+	end
+	parts[#parts + 1] = RESTORE_CURSOR
+	return table.concat(parts)
+end
+
+local function restore_sequence(cells)
+	local parts = { SAVE_CURSOR }
+	for _, cell in ipairs(cells) do
+		parts[#parts + 1] = move_to(cell.row, cell.column) .. cell.original
+	end
+	parts[#parts + 1] = RESTORE_CURSOR
+	return table.concat(parts)
+end
+
 -- ── Public API ────────────────────────────────────────────────────────────────
 
 -- ── Press-the-label selector ──────────────────────────────────────────────────
@@ -138,59 +230,65 @@ end
 -- `jump_keys`, always present — whose callbacks all read a small shared
 -- mutable `state` table that `open_word_jump` refills on every `J` press.
 --
--- There's no hook to draw labels inline over the text itself (WezTerm has no
--- way to overlay text on live pane content), so the label:word legend is
--- rendered into the left-status bar for the duration of the pick instead —
--- wide enough there to take the tab bar's place rather than share it
--- (format-tab-title is blanked for the same duration, see below `state`).
+-- Labels are drawn over the first characters of each word with
+-- pane:inject_output, which feeds the terminal model directly (nothing reaches
+-- the shell). The covered characters are kept and written back on every exit.
+-- A zsh redraw would also clear them, which is why status.lua does not signal
+-- the shell on entering JUMP. The left status shows just the JUMP badge.
 --
 -- @param ctx table  Plugin context (jump_keys, jump_pattern, JUMP, enter_normal, render_jump_status)
 -- @return table     { key_table = <WezTerm key table>,
---                      open_word_jump = function(window, pane) }
+--                      open_word_jump = function(window, pane),
+--                      collect_words, screen_cell  (pure helpers, exposed for tests) }
 return function(ctx)
 	local keys         = ctx.jump_keys or "fjdkslaghrueiwotnvbc"
 	local jump_pattern = ctx.jump_pattern
 	local enter_normal = ctx.enter_normal
 
 	-- Per-invocation state, closed over by the static key table's callbacks.
-	-- targets: { [label] = column }; order: [{ label, text }] nearest-first,
-	-- for the status-bar legend. prefix narrows as keys are typed.
-	local state = { targets = nil, order = nil, prefix = "", cur_col = 0 }
+	-- targets: { [label] = column }. prefix narrows as keys are typed.
+	-- painted: the cells currently overwritten by in-line labels, or nil.
+	-- layout: what the in-line labels are drawn from, kept so a typed prefix can repaint.
+	local state = { targets = nil, prefix = "", cur_col = 0, painted = nil, layout = nil }
 	-- Exposed so status.lua can gate on it directly instead of on
 	-- window:active_key_table(), which can briefly lag state.targets right
 	-- after ActivateKeyTable (only enqueued, not applied synchronously).
 	ctx.jump_state = state
 
-	-- Blank every tab's title for as long as a pick is in progress, so the
-	-- legend takes the tab bar's own space. Only the first format-tab-title
-	-- handler registered ever runs (WezTerm's rule), and state.targets is
-	-- shared plugin-wide state like count_state/last_change elsewhere in
-	-- this codebase, so a pick in one window blanks tabs in every window.
-	wezterm.on("format-tab-title", function()
-		if state.targets then
-			return ""
-		end
-		return nil -- defer to WezTerm's normal tab title computation
-	end)
+	local function paint_labels(pane, cells)
+		state.painted = cells
+		pcall(function() pane:inject_output(paint_sequence(cells)) end)
+	end
 
-	local function render_status(window, pane)
-		local parts = {}
-		for _, entry in ipairs(state.order) do
-			if entry.label:sub(1, #state.prefix) == state.prefix then
-				parts[#parts + 1] = entry.label .. ":" .. entry.text
-			end
+	local function clear_labels(pane)
+		if not state.painted then
+			return
 		end
-		local legend = table.concat(parts, "  ")
-		window:set_left_status(ctx.render_jump_status(pane, legend))
+		local cells = state.painted
+		state.painted = nil
+		pcall(function() pane:inject_output(restore_sequence(cells)) end)
+	end
+
+	local function repaint_labels(pane)
+		local layout = state.layout
+		if not layout then
+			return
+		end
+		clear_labels(pane)
+		paint_labels(pane, label_cells(
+			layout.words, layout.label_by_idx, layout.characters, layout.zone, layout.pane_width, state.prefix
+		))
 	end
 
 	local function cancel(window, pane)
+		clear_labels(pane)
 		state.targets = nil
 		window:perform_action(enter_normal, pane)
 	end
 
 	local function commit(window, pane, col)
 		local delta = col - state.cur_col
+		clear_labels(pane)
 		state.targets = nil
 
 		-- CTRL+F/CTRL+B, not arrow keys: confirmed via bindkey that both
@@ -262,7 +360,7 @@ return function(ctx)
 		end
 		if any then
 			state.prefix = candidate
-			render_status(window, pane)
+			repaint_labels(pane)
 		else
 			cancel(window, pane) -- no viable label starts with this key
 		end
@@ -273,7 +371,7 @@ return function(ctx)
 			return
 		end
 		state.prefix = state.prefix:sub(1, -2)
-		render_status(window, pane)
+		repaint_labels(pane)
 	end
 
 	-- Built once: one binding per (deduplicated) alphabet character, plus
@@ -299,7 +397,7 @@ return function(ctx)
 
 	-- Everything else cancels back to normal rather than being left unbound
 	-- (which would fall through the key-table stack). JUMP carries extra
-	-- state — state.targets, the tab-title blank, the left-status legend —
+	-- state — state.targets, the in-line labels, the left-status badge —
 	-- that only cancel()/commit() unwind, so a key falling all the way
 	-- through would leave that stuck while leaking into the shell or
 	-- triggering an unrelated normal_mode action.
@@ -373,16 +471,12 @@ return function(ctx)
 			label_by_idx[idx] = labels[rank]
 		end
 
-		-- But build the legend in the words' own left-to-right order —
-		-- proximity order here would read scrambled against the line.
 		state.targets = {}
-		state.order = {}
 		state.prefix = ""
 		state.cur_col = cur_col
 		for idx, w in ipairs(words) do
 			local label = label_by_idx[idx]
 			state.targets[label] = w.col
-			state.order[#state.order + 1] = { label = label, text = w.text }
 		end
 
 		-- No replace_current: stack JUMP on top of normal_mode (matching
@@ -392,8 +486,24 @@ return function(ctx)
 			wezterm.action.ActivateKeyTable({ name = ctx.JUMP, one_shot = false }),
 			pane
 		)
-		render_status(window, pane)
+		window:set_left_status(ctx.render_jump_status(pane))
+		state.layout = {
+			words = words,
+			label_by_idx = label_by_idx,
+			characters = to_list(text),
+			zone = zone,
+			pane_width = pane_width,
+		}
+		repaint_labels(pane)
 	end
 
-	return { key_table = kt, open_word_jump = open_word_jump }
+	return {
+		key_table = kt,
+		open_word_jump = open_word_jump,
+		collect_words = collect_words,
+		screen_cell = screen_cell,
+		label_cells = label_cells,
+		paint_sequence = paint_sequence,
+		restore_sequence = restore_sequence,
+	}
 end
