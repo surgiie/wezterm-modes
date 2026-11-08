@@ -11,6 +11,7 @@ local REPLACE = "replace_mode"
 local KEYMAP  = "keymap_mode"
 local COUNT   = "count_mode"
 local JUMP    = "jump_mode"
+local HINT    = "hint_mode"
 
 -- ── Shared actions ────────────────────────────────────────────────────────────
 
@@ -166,15 +167,36 @@ local function pane_is_shell(pane)
 	return false
 end
 
+local EDITOR_PROCESS_PATTERNS = { "^g?n?vim", "^vi$", "^view$", "^vimdiff$" }
+
+--- Return true when the pane's foreground process is vim or neovim.
+--- Used by the default visual-mode check, which runs everywhere else.
+--- @param pane table  WezTerm Pane object
+--- @return boolean
+local function pane_is_editor(pane)
+	local executable = (pane:get_foreground_process_name() or ""):lower():match("[^/]*$")
+	for _, pattern in ipairs(EDITOR_PROCESS_PATTERNS) do
+		if executable:find(pattern) then return true end
+	end
+	return false
+end
+
 -- ── Public API ────────────────────────────────────────────────────────────────
 
 --- Wire all vim-mode key tables and events into a WezTerm config.
 ---
 --- @param config table  WezTerm config_builder object
 --- @param opts   table  Optional settings:
----   - should_run        function(pane, pane_is_shell) → boolean
+---   - should_run        function(pane, pane_is_shell, mode) → boolean
 ---                       Called on every focus/status tick; plugin is a no-op when false.
 ---                       Receives the built-in pane_is_shell so callers can delegate.
+---                       mode is "normal" (modal editing, default check: pane is
+---                       a shell) or "visual" (hint/copy mode, default check: pane
+---                       is not vim/nvim).
+---   - visual_key        table|false  Global binding for visual mode, active in any pane
+---                       where should_run(..., "visual") holds; elsewhere the key is
+---                       passed through (default: { key = "x", mods = "CTRL|SHIFT" };
+---                       false disables)
 ---   - key_table_timeout number   Timeout ms for multi-key sequences like gg/dd (default: 2000)
 ---   - icon               string  Icon shown in left status when plugin is inactive (e.g. "🔥")
 ---   - left_status_prefix function(pane) → string?
@@ -198,12 +220,22 @@ end
 ---   - jump_pattern     string  Lua pattern selecting `J`'s targets (default:
 ---                              "%S+" — every whitespace-separated token, so
 ---                              "pod-edge-0" or "-it" are each one target)
+---   - hint_keys        string  Label alphabet for `v` (viewport hints); "v" is
+---                              reserved for plain copy mode
+---                              (default: "fjdkslaghrueiwotnbc")
+---   - hint_pattern     string  Lua pattern selecting `v`'s targets (default: "%S+")
 function M.apply_to_config(config, opts)
 	opts = opts or {}
 
+	local function default_should_run(pane, mode)
+		if mode == "visual" then return not pane_is_editor(pane) end
+		return pane_is_shell(pane)
+	end
 	local should_run = opts.should_run
-		and function(pane) return opts.should_run(pane, pane_is_shell) end
-		or pane_is_shell
+		and function(pane, mode) return opts.should_run(pane, pane_is_shell, mode or "normal") end
+		or default_should_run
+	local visual_key = opts.visual_key
+	if visual_key == nil then visual_key = { key = "x", mods = "CTRL|SHIFT" } end
 	local keymaps   = opts.keymaps or {}
 	local kt_timeout = opts.key_table_timeout or 2000
 	local icon       = opts.icon or ""
@@ -218,7 +250,7 @@ function M.apply_to_config(config, opts)
 	--   Shared actions: enter_normal, enter_insert, noop
 	--   Shared constants: SWALLOWED_KEYS, SWALLOWED_SHIFT (key arrays)
 	--   Shared helpers: delete_to_line_bound, do_change, execute_command
-	--   Config: should_run, kt_timeout, keymaps, jump_keys, jump_pattern, icon, left_status_prefix, starship
+	--   Config: should_run(pane, mode?), kt_timeout, keymaps, jump_keys, jump_pattern, icon, left_status_prefix, starship
 	--   Mutable state: count_state, last_change (preserved across keystrokes within a config load)
 	--   Utilities: load (to load sibling files), pane_is_shell, nested_kts (key_tables array)
 	-- Modes export a function(ctx) that returns a key binding table for WezTerm.
@@ -249,7 +281,10 @@ function M.apply_to_config(config, opts)
 		do_change       = do_change,
 		jump_keys       = opts.jump_keys,
 		jump_pattern    = opts.jump_pattern,
-		icon            = icon,
+		HINT            = HINT,
+		hint_keys       = opts.hint_keys,
+		hint_pattern    = opts.hint_pattern,
+		icon           = icon,
 		left_status_prefix = left_status_prefix,
 		load            = load,
 		pane_is_shell   = pane_is_shell,
@@ -263,12 +298,14 @@ function M.apply_to_config(config, opts)
 	-- uses to paint the JUMP badge into the left status.
 	load("status.lua")(ctx)
 	ctx.jump = load("jump.lua")(ctx)
+	ctx.hint = load("hint_mode.lua")(ctx)
 
 	config.key_tables[MOTION]  = load("modes/motion.lua")(ctx)
 	config.key_tables[REPLACE] = load("modes/replace.lua")(ctx)
 	config.key_tables[DELETE]  = load("modes/delete.lua")(ctx)
 	config.key_tables[COUNT]   = load("modes/count.lua")(ctx)
 	config.key_tables[JUMP]    = ctx.jump.key_table
+	config.key_tables[HINT]    = ctx.hint.key_table
 	if #keymaps > 0 then
 		config.key_tables[KEYMAP] = load("modes/keymap.lua")(ctx)
 	end
@@ -286,6 +323,19 @@ function M.apply_to_config(config, opts)
 			end
 		end),
 	})
+
+	if visual_key then
+		table.insert(config.keys, {
+			key = visual_key.key, mods = visual_key.mods or "NONE",
+			action = wezterm.action_callback(function(window, pane)
+				if should_run(pane, "visual") then
+					ctx.hint.open(window, pane)
+				else
+					window:perform_action(wezterm.action.SendKey({ key = visual_key.key, mods = visual_key.mods }), pane)
+				end
+			end),
+		})
+	end
 
 	wezterm.on("window-config-reloaded", function(window, pane)
 		if should_run(pane) then

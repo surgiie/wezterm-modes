@@ -187,8 +187,12 @@ return function(ctx)
 			if last_change.run then last_change.run(window, pane) end
 		end) },
 
-		-- visual mode: enters WezTerm's built-in copy_mode key table; status shows VISUAL
-		{ key = "v", action = wezterm.action.ActivateCopyMode },
+		-- visual mode: hint labels over the viewport (see hint_mode.lua), then
+		-- WezTerm's built-in copy_mode key table; status shows VISUAL
+		{ key = "v", action = wezterm.action_callback(function(window, pane)
+			if not should_run(pane, "visual") then return end
+			ctx.hint.open(window, pane)
+		end) },
 
 		-- yank/paste/delete
 		{ key = "y", action = wezterm.action.ActivateKeyTable({ name = YANK,   one_shot = false, timeout_milliseconds = 2000 }) },

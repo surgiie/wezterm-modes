@@ -175,9 +175,11 @@ end
 --- @param zone             table    Semantic zone
 --- @param pane_width       number
 --- @param prefix           string?  Typed so far; only matching labels are drawn, minus that prefix
---- @return table[]  { row, column, label_character, original }
-local function label_cells(words, label_by_idx, text_characters, zone, pane_width, prefix)
+--- @param screen_top       number?  Stable row index of the screen's first row (dimensions.physical_top); default 0
+--- @return table[]  { row, column, label_character, original }, rows relative to the screen
+local function label_cells(words, label_by_idx, text_characters, zone, pane_width, prefix, screen_top)
 	prefix = prefix or ""
+	screen_top = screen_top or 0
 	local cells = {}
 	for index, word in ipairs(words) do
 		local label = label_by_idx[index]
@@ -187,9 +189,9 @@ local function label_cells(words, label_by_idx, text_characters, zone, pane_widt
 		end
 		for label_character in label:sub(#prefix + 1):gmatch(UTF8) do
 			local offset = word.col + position
-			local row, column = screen_cell(zone, offset, pane_width)
+			local stable_row, column = screen_cell(zone, offset, pane_width)
 			cells[#cells + 1] = {
-				row = row,
+				row = stable_row - screen_top,
 				column = column,
 				label_character = label_character,
 				original = text_characters[offset + 1] or " ",
@@ -276,7 +278,7 @@ return function(ctx)
 		end
 		clear_labels(pane)
 		paint_labels(pane, label_cells(
-			layout.words, layout.label_by_idx, layout.characters, layout.zone, layout.pane_width, state.prefix
+			layout.words, layout.label_by_idx, layout.characters, layout.zone, layout.pane_width, state.prefix, layout.screen_top
 		))
 	end
 
@@ -452,7 +454,8 @@ return function(ctx)
 			return
 		end
 
-		local pane_width = pane:get_dimensions().cols
+		local dimensions = pane:get_dimensions()
+		local pane_width = dimensions.cols
 		local cur_col = linear_offset(zone, cursor.y, cursor.x, pane_width)
 
 		-- Assign labels nearest-cursor-first, like nvim-labels: shortest
@@ -493,6 +496,7 @@ return function(ctx)
 			characters = to_list(text),
 			zone = zone,
 			pane_width = pane_width,
+			screen_top = dimensions.physical_top or 0,
 		}
 		repaint_labels(pane)
 	end

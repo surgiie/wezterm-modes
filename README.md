@@ -42,6 +42,27 @@ Numeric prefixes (`1`-`9`, then any further digits) only apply to word motions a
 Switch to "jump" mode from normal mode via `J` key. This mode is useful for quickly moving the cursor to a specific token on the current line. This mode paints a label over the first characters of each token on the current line. Typing a label moves the cursor to the start of that token, e.g. typing `d` over the label painted on `example-app` jumps to it.
 
 
+#### Viewport hints
+
+`v` paints a label over every whitespace-separated token in the terminal viewport. Typing a label opens WezTerm's copy mode with the cursor on that token; press `v` there to start the selection.
+
+| Key      | Action                                             |
+|----------|-----------------------------------------------------|
+| label    | Open copy mode with the cursor on that token       |
+| `v`      | Skip the hints and open plain copy mode            |
+| `Escape` | Cancel and return to normal mode                   |
+| `Backspace` | Undo the last typed label character             |
+
+Any other key cancels. The status shows `VISUAL` while hints are up. Alt-screen panes (less, htop, ...) get hints too, though an app that redraws can paint over the labels. An empty viewport, or more tokens than labels open plain copy mode directly.
+
+Limitations:
+
+- Labels are painted onto the live screen and restored from the pane's escape codes; they are not visible when the view is scrolled back.
+- Double-width characters shift label and cursor columns.
+- Copy mode has no absolute cursor move, so the cursor is placed with relative moves from the terminal cursor shortly after copy mode opens.
+- A label drawn over a prompt row can be wiped by a prompt redraw.
+
+
 ### Editing
 
 | Key       | Action                                  |
@@ -74,7 +95,7 @@ Switch to "jump" mode from normal mode via `J` key. This mode is useful for quic
 
 | Key      | Action                   |
 |----------|--------------------------|
-| `v`      | Enter visual (copy) mode |
+| `v`      | Paint hint labels over the viewport (see [Viewport hints](#viewport-hints)) |
 | `:`      | Enter keymap mode (listens for a configured keymap key) |
 | `?`      | Fuzzy picker over keymaps |
 | `i`      | Enter insert mode        |
@@ -229,10 +250,19 @@ vim_modes.apply_to_config(config)
 ```lua
 vim_modes.apply_to_config(config, {
     -- called each time a pane is focused to decide if the plugin runs;
-    -- receives (pane, default_pane_is_shell) so you can reuse the default check
-    should_run = function(pane, is_shell)
+    -- receives (pane, default_pane_is_shell, mode) so you can reuse the default check.
+    -- mode is "normal" (default: pane is a shell) or "visual" (default: pane is not vim/nvim)
+    should_run = function(pane, is_shell, mode)
+        if mode == "visual" then
+            return true
+        end
         return is_shell(pane)
     end,
+
+    -- global key that opens visual mode (hints, then copy mode) in any pane where
+    -- should_run(..., "visual") holds; passed through to the pane otherwise.
+    -- default: { key = "x", mods = "CTRL|SHIFT" }; false disables
+    visual_key = { key = "x", mods = "CTRL|SHIFT" },
 
     -- timeout in ms for multi-key sequences like gg, dd, yy (default: 2000)
     key_table_timeout = 2000,
@@ -274,6 +304,13 @@ vim_modes.apply_to_config(config, {
     -- whitespace-separated token, so "pod-edge-0" or "-it" are each one
     -- target rather than split at their dashes)
     jump_pattern = "%S+",
+
+    -- label alphabet for v (viewport hints); `v` is always reserved for
+    -- "plain copy mode" and removed from it (default: "fjdkslaghrueiwotnbc")
+    hint_keys = "fjdkslaghrueiwotnbc",
+
+    -- Lua pattern selecting v's targets (default: "%S+")
+    hint_pattern = "%S+",
 })
 ```
 

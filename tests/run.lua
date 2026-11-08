@@ -362,6 +362,23 @@ test("redraw: entering a jump pick sends no signal, leaving it does", function()
 	assert_equal(#signals_sent, 2)
 end)
 
+test("redraw: showing hints sends no signal, cancelling them does", function()
+	local hint_state = { tokens = nil }
+	local handler, filesystem = load_status({ starship = { state_dir = "/state" }, hint_state = hint_state })
+	handler(fake_window("normal_mode"), fake_pane(5))
+	assert_equal(#signals_sent, 1)
+
+	hint_state.tokens = { { row = 0, col = 0, length = 1, text = "a" } }
+	handler(fake_window("hint_mode"), fake_pane(5))
+	handler(fake_window("hint_mode"), fake_pane(5))
+	assert_equal(#signals_sent, 1)
+	assert_equal(filesystem.files["/state/5"], "VISUAL")
+
+	hint_state.tokens = nil
+	handler(fake_window("normal_mode"), fake_pane(5))
+	assert_equal(#signals_sent, 2)
+end)
+
 test("redraw: entering copy mode signals the shell once and types nothing into the pane", function()
 	local handler = load_status({ starship = { state_dir = "/state" } })
 	handler(fake_window("normal_mode"), fake_pane(5))
@@ -715,6 +732,15 @@ test("jump: label_cells keeps the characters a label covers", function()
 	assert_equal(jump.restore_sequence(cells), "\0277\27[3;1Ha\27[3;2Hb\27[3;4Hc\0278")
 end)
 
+test("jump: label_cells makes rows relative to the screen top when there is scrollback", function()
+	local jump = load_jump()
+	local words = jump.collect_words("ab", "%S+")
+	local zone = { start_x = 0, start_y = 1002, end_y = 1002 }
+	local cells = jump.label_cells(words, { "f" }, { "a", "b" }, zone, 80, "", 1000)
+	assert_equal(cells[1].row, 2)
+	assert_equal(jump.paint_sequence(cells), "\0277\27[3;1H\27[7mf\27[0m\0278")
+end)
+
 test("jump: label_cells draws only labels matching the typed prefix, minus the prefix", function()
 	local jump = load_jump()
 	local words = jump.collect_words("ab cd ef", "%S+")
@@ -929,6 +955,380 @@ test("fuzz: random tick sequences keep state files and redraw signals consistent
 				seed, table.concat(violations, "; "), table.concat(log, " ")))
 		end
 	end
+end)
+
+-- ── hints: viewport tokens ────────────────────────────────────────────────────
+
+local hints = dofile("plugin/hints.lua")
+
+test("hints: tokens carry 0-indexed row and column", function()
+	local tokens = hints.collect_viewport_tokens({ "ls -la", "  foo bar" })
+	assert_equal(#tokens, 4)
+	assert_equal(tokens[1].text, "ls")
+	assert_equal(tokens[1].row, 0)
+	assert_equal(tokens[1].col, 0)
+	assert_equal(tokens[2].text, "-la")
+	assert_equal(tokens[2].col, 3)
+	assert_equal(tokens[3].text, "foo")
+	assert_equal(tokens[3].row, 1)
+	assert_equal(tokens[3].col, 2)
+	assert_equal(tokens[4].col, 6)
+end)
+
+test("hints: columns and lengths count characters, not bytes", function()
+	local tokens = hints.collect_viewport_tokens({ "é→x yz" })
+	assert_equal(tokens[1].length, 3)
+	assert_equal(tokens[2].text, "yz")
+	assert_equal(tokens[2].col, 4)
+end)
+
+test("hints: blank rows and an empty viewport yield no tokens", function()
+	assert_equal(#hints.collect_viewport_tokens({}), 0)
+	assert_equal(#hints.collect_viewport_tokens({ "", "   " }), 0)
+end)
+
+test("hints: a custom pattern narrows the tokens", function()
+	local tokens = hints.collect_viewport_tokens({ "pod-a 1/1 Running" }, "%a[%w%-]+")
+	assert_equal(tokens[1].text, "pod-a")
+	assert_equal(tokens[2].text, "Running")
+	assert_equal(#tokens, 2)
+end)
+
+test("hints: split_viewport_rows keeps interior blank rows and drops the trailing one", function()
+	local rows = hints.split_viewport_rows("a\n\nb\n")
+	assert_equal(#rows, 3)
+	assert_equal(rows[2], "")
+	assert_equal(rows[3], "b")
+end)
+
+-- ── hints: labels and painting ────────────────────────────────────────────────
+
+local function sample_tokens()
+	return hints.collect_viewport_tokens({ "aaa bbb", "ccc ddd", "eee fff" })
+end
+
+test("hints: labels.generate_labels returns a prefix-free set of the requested size", function()
+	local generate_labels = dofile("plugin/labels.lua").generate_labels
+	local labels = generate_labels(30, "abcdefghij")
+	assert_equal(#labels, 30)
+	for left_index, left in ipairs(labels) do
+		for right_index, right in ipairs(labels) do
+			if left_index ~= right_index then
+				assert(right:sub(1, #left) ~= left, left .. " is a prefix of " .. right)
+			end
+		end
+	end
+end)
+
+test("hints: assign_labels gives the shortest labels to the tokens nearest the anchor", function()
+	local tokens = sample_tokens()
+	local label_by_token = hints.assign_labels(tokens, { "a", "b", "c", "d", "e", "f" }, 1, 0)
+	assert_equal(label_by_token[3], "a")
+	assert_equal(label_by_token[4], "b")
+	assert_equal(label_by_token[1], "c")
+	assert_equal(label_by_token[5], "d")
+	assert_equal(label_by_token[2], "e")
+end)
+
+test("hints: label_cells paints from the token's first column", function()
+	local tokens = sample_tokens()
+	local cells = hints.label_cells(tokens, { [2] = "xy" }, "", 80)
+	assert_equal(#cells, 2)
+	assert_equal(cells[1].row, 0)
+	assert_equal(cells[1].column, 4)
+	assert_equal(cells[1].label_character, "x")
+	assert_equal(cells[2].column, 5)
+end)
+
+test("hints: label_cells narrows to the typed prefix and drops it", function()
+	local tokens = sample_tokens()
+	local cells = hints.label_cells(tokens, { [1] = "ab", [2] = "ac", [3] = "ba" }, "a", 80)
+	assert_equal(#cells, 2)
+	assert_equal(cells[1].label_character, "b")
+	assert_equal(cells[1].column, 0)
+	assert_equal(cells[2].label_character, "c")
+end)
+
+test("hints: label_cells drops cells past the last column", function()
+	local tokens = hints.collect_viewport_tokens({ "ab" })
+	assert_equal(#hints.label_cells(tokens, { [1] = "xyz" }, "", 2), 2)
+end)
+
+test("hints: paint_sequence draws reverse-video labels and keeps the cursor", function()
+	local sequence = hints.paint_sequence({ { row = 1, column = 4, label_character = "x" } })
+	assert_equal(sequence, "\27" .. "7\27[2;5H\27[7mx\27[0m\27" .. "8")
+end)
+
+test("hints: restore_sequence rewrites each touched row once from its escaped original", function()
+	local cells = {
+		{ row = 2, column = 0, label_character = "a" },
+		{ row = 0, column = 3, label_character = "b" },
+		{ row = 2, column = 5, label_character = "c" },
+	}
+	local sequence = hints.restore_sequence(cells, { "\27[31mred\27[0m", "unused", "plain" })
+	local first_row = sequence:find("\27[1;1H", 1, true)
+	local third_row = sequence:find("\27[3;1H", 1, true)
+	assert(first_row and third_row and first_row < third_row, "rows rewritten top to bottom")
+	assert(sequence:find("\27[31mred", 1, true), "original colours restored")
+	assert(not sequence:find("unused", 1, true), "untouched row left alone")
+	local _, third_row_writes = sequence:gsub("plain", "")
+	assert_equal(third_row_writes, 1)
+end)
+
+-- ── hint mode ─────────────────────────────────────────────────────────────────
+
+local function load_hint_mode(context_overrides)
+	local delayed_callbacks = {}
+	package.loaded["wezterm"] = {
+		on = function() end,
+		action_callback = function(callback) return { callback = callback } end,
+		action = setmetatable({}, {
+			__index = function(_, name)
+				return setmetatable({ name = name }, {
+					__call = function(_, argument) return { name = name, argument = argument } end,
+				})
+			end,
+		}),
+		time = { call_after = function(_, callback) delayed_callbacks[#delayed_callbacks + 1] = callback end },
+	}
+	local context = {
+		HINT = "hint_mode",
+		enter_normal = "enter_normal",
+		load = function(path) return dofile("plugin/" .. path) end,
+	}
+	for key, value in pairs(context_overrides or {}) do
+		context[key] = value
+	end
+	return dofile("plugin/hint_mode.lua")(context), context, delayed_callbacks
+end
+
+local function hint_window()
+	return {
+		performed = {},
+		perform_action = function(self, action) self.performed[#self.performed + 1] = action end,
+	}
+end
+
+local function hint_pane(overrides)
+	local pane = {
+		injected = {},
+		inject_output = function(self, sequence) self.injected[#self.injected + 1] = sequence end,
+		is_alt_screen_active = function() return false end,
+		get_lines_as_text = function() return "ls -la\nfoo\n" end,
+		get_lines_as_escapes = function() return "\27[32mls\27[0m -la\nfoo\n" end,
+		get_cursor_position = function() return { x = 0, y = 1 } end,
+		get_dimensions = function() return { cols = 80 } end,
+	}
+	for key, value in pairs(overrides or {}) do
+		pane[key] = value
+	end
+	return pane
+end
+
+local function hint_key_callback(hint_mode, key, mods)
+	for _, binding in ipairs(hint_mode.key_table) do
+		if binding.key == key and binding.mods == (mods or "NONE") then
+			return binding.action.callback
+		end
+	end
+end
+
+test("hint mode: opening activates the hint table and paints labels over the viewport", function()
+	local hint_mode = load_hint_mode()
+	local window, pane = hint_window(), hint_pane()
+	hint_mode.open(window, pane)
+	assert_equal(window.performed[1].name, "ActivateKeyTable")
+	assert_equal(window.performed[1].argument.name, "hint_mode")
+	assert_equal(#pane.injected, 1)
+	assert(pane.injected[1]:find("\27[7m", 1, true), "labels are reverse video")
+end)
+
+test("hint mode: the nearest token to the cursor gets the first label", function()
+	local hint_mode = load_hint_mode()
+	local window, pane = hint_window(), hint_pane()
+	hint_mode.open(window, pane)
+	assert(pane.injected[1]:find("\27[2;1H\27[7mf", 1, true), "foo on the cursor row is labelled f")
+end)
+
+test("hint mode: alt-screen panes get hints painted like any other pane", function()
+	local hint_mode = load_hint_mode()
+	local window = hint_window()
+	local pane = hint_pane({ is_alt_screen_active = function() return true end })
+	hint_mode.open(window, pane)
+	assert_equal(window.performed[1].name, "ActivateKeyTable")
+	assert_equal(#pane.injected, 1)
+end)
+
+test("hint mode: a blank viewport opens plain copy mode", function()
+	local hint_mode = load_hint_mode()
+	local window = hint_window()
+	local pane = hint_pane({ get_lines_as_escapes = function() return "\r\n\27[0m\r\n" end })
+	hint_mode.open(window, pane)
+	assert_equal(window.performed[1].name, "ActivateCopyMode")
+	assert_equal(#pane.injected, 0)
+end)
+
+test("hint mode: a label restores the rows, opens copy mode, then walks to the token", function()
+	local hint_mode, _, delayed_callbacks = load_hint_mode()
+	local window, pane = hint_window(), hint_pane()
+	hint_mode.open(window, pane)
+	hint_key_callback(hint_mode, "d")(window, pane)
+
+	assert_equal(#pane.injected, 2)
+	assert(pane.injected[2]:find("\27[32mls", 1, true), "original colours written back")
+	local copy_mode_open = window.performed[#window.performed]
+	assert_equal(copy_mode_open.name, "Multiple")
+	assert_equal(copy_mode_open.argument[1].name, "PopKeyTable")
+	assert_equal(copy_mode_open.argument[2].name, "ActivateCopyMode")
+
+	assert_equal(#delayed_callbacks, 1)
+	delayed_callbacks[1]()
+	local walk = window.performed[#window.performed].argument
+	local steps = {}
+	for index = 2, #walk do
+		steps[#steps + 1] = walk[index].argument
+	end
+	assert_equal(table.concat(steps, ","), "MoveUp,MoveToStartOfLine,MoveRight,MoveRight,MoveRight")
+end)
+
+test("hint mode: Escape restores the rows and returns to normal", function()
+	local hint_mode = load_hint_mode()
+	local window, pane = hint_window(), hint_pane()
+	hint_mode.open(window, pane)
+	hint_key_callback(hint_mode, "Escape")(window, pane)
+	assert_equal(#pane.injected, 2)
+	assert_equal(window.performed[#window.performed], "enter_normal")
+end)
+
+test("hint mode: v while hints show restores the rows and opens plain copy mode", function()
+	local hint_mode, _, delayed_callbacks = load_hint_mode()
+	local window, pane = hint_window(), hint_pane()
+	hint_mode.open(window, pane)
+	hint_key_callback(hint_mode, "v")(window, pane)
+	assert_equal(#pane.injected, 2)
+	assert_equal(window.performed[#window.performed].name, "Multiple")
+	assert_equal(#delayed_callbacks, 0)
+end)
+
+test("hint mode: a key outside the alphabet cancels", function()
+	local hint_mode = load_hint_mode()
+	local window, pane = hint_window(), hint_pane()
+	hint_mode.open(window, pane)
+	hint_key_callback(hint_mode, "x")(window, pane)
+	assert_equal(#pane.injected, 2)
+	assert_equal(window.performed[#window.performed], "enter_normal")
+end)
+
+test("hint mode: a multi-key label narrows the prefix and Backspace widens it again", function()
+	local hint_mode = load_hint_mode({ hint_keys = "ab" })
+	local window = hint_window()
+	local pane = hint_pane({ get_lines_as_escapes = function() return "one two three\n" end })
+	hint_mode.open(window, pane)
+	local opening_paint = pane.injected[1]
+
+	hint_key_callback(hint_mode, "b")(window, pane)
+	assert_equal(#pane.injected, 3)
+	assert(pane.injected[3] ~= opening_paint, "narrowed set is drawn")
+	assert_equal(window.performed[#window.performed].name, "ActivateKeyTable")
+
+	hint_key_callback(hint_mode, "Backspace")(window, pane)
+	assert_equal(#pane.injected, 5)
+	assert_equal(pane.injected[5], opening_paint)
+end)
+
+test("hint mode: keys pressed after the hints are gone do nothing", function()
+	local hint_mode = load_hint_mode()
+	local window, pane = hint_window(), hint_pane()
+	hint_key_callback(hint_mode, "f")(window, pane)
+	hint_key_callback(hint_mode, "v")(window, pane)
+	hint_key_callback(hint_mode, "Backspace")(window, pane)
+	assert_equal(#window.performed, 0)
+	assert_equal(#pane.injected, 0)
+end)
+
+test("hints: split_viewport_rows drops the carriage return that ends escaped rows", function()
+	local rows = dofile("plugin/hints.lua").split_viewport_rows("one\r\ntwo\r\n")
+	assert_equal(#rows, 2)
+	assert_equal(rows[1], "one")
+	assert_equal(rows[2], "two")
+end)
+
+test("hints: strip_escapes keeps text and removes colour and charset sequences", function()
+	local plain = dofile("plugin/hints.lua").strip_escapes({ "\27(B\27[0m\27[38:2::1:2:3mfoo\27[39m bar\27(B\27[0m", "" })
+	assert_equal(plain[1], "foo bar")
+	assert_equal(plain[2], "")
+end)
+
+test("hint mode: restore never ends a row with a carriage return before the erase", function()
+	local hint_mode = load_hint_mode()
+	local window = hint_window()
+	local pane = hint_pane({ get_lines_as_escapes = function() return "ls -la\r\nfoo\r\n" end })
+	hint_mode.open(window, pane)
+	hint_key_callback(hint_mode, "f")(window, pane)
+	assert(not pane.injected[2]:find("\r", 1, true), "restore must not contain a carriage return")
+end)
+
+test("hint mode: the cursor row is made screen-relative with physical_top", function()
+	local hint_mode, context = load_hint_mode()
+	local window = hint_window()
+	local pane = hint_pane({
+		get_cursor_position = function() return { x = 0, y = 101 } end,
+		get_dimensions = function() return { cols = 80, physical_top = 100 } end,
+	})
+	hint_mode.open(window, pane)
+	assert_equal(context.hint_state.cursor_row, 1)
+	assert(pane.injected[1]:find("\27[2;1H\27[7mf", 1, true), "foo on the cursor row is labelled f")
+end)
+
+test("hint mode: v is bound once, even when the alphabet contains it", function()
+	local hint_mode = load_hint_mode({ hint_keys = "vab" })
+	local count = 0
+	for _, binding in ipairs(hint_mode.key_table) do
+		if binding.key == "v" and binding.mods == "NONE" then count = count + 1 end
+	end
+	assert_equal(count, 1)
+end)
+
+test("hint mode: the hint table reads as VISUAL, and an unset HINT never matches", function()
+	local names = {
+		NORMAL = "normal_mode", YANK = "yank_mode", DELETE = "delete_mode", MOTION = "motion_mode",
+		REPLACE = "replace_mode", KEYMAP = "keymap_mode", COUNT = "count_mode", JUMP = "jump_mode",
+	}
+	local with_hint_names = { HINT = "hint_mode" }
+	for key, value in pairs(names) do
+		with_hint_names[key] = value
+	end
+	assert_equal(dofile("plugin/mode_label.lua")(with_hint_names)("hint_mode", false), "VISUAL")
+	assert_equal(dofile("plugin/mode_label.lua")(names)(nil, false), "INSERT")
+end)
+
+test("status: visual overlay in a pane where only visual runs keeps its key table and badge", function()
+	local handler = load_status({
+		should_run = function(_, mode) return mode == "visual" and true or false end,
+	})
+	local window = fake_window("copy_mode")
+	local popped = false
+	function window:perform_action() popped = true end
+	handler(window, fake_pane(5))
+	assert_equal(popped, false)
+	assert_equal(window.left_status, " VISUAL ")
+end)
+
+test("status: visual overlay is torn down when visual is not allowed for the pane", function()
+	local handler = load_status({ should_run = function() return false end })
+	local window = fake_window("copy_mode")
+	local popped = false
+	function window:perform_action() popped = true end
+	handler(window, fake_pane(5))
+	assert_equal(popped, true)
+end)
+
+test("hint mode: cancelling in a pane where normal mode does not run clears the key tables", function()
+	local hint_mode = load_hint_mode({ should_run = function() return false end })
+	local window, pane = hint_window(), hint_pane()
+	hint_mode.open(window, pane)
+	hint_key_callback(hint_mode, "Escape")(window, pane)
+	assert_equal(window.performed[#window.performed].name, "ClearKeyTableStack")
 end)
 
 print(string.format("\n%d tests, %d failed", total, failures))

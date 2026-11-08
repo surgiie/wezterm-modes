@@ -224,7 +224,19 @@ return function(ctx)
 			return
 		end
 
+		if active and ctx.hint_state and ctx.hint_state.tokens then
+			publish_mode(window, pane, "VISUAL", true)
+			return
+		end
+
 		if not active then
+			local in_visual = ctx.hint_state and ctx.hint_state.tokens ~= nil
+				or OVERLAY_KEY_TABLES[kt] == true
+				or (ctx.HINT ~= nil and kt == ctx.HINT)
+			if in_visual and should_run(pane, "visual") then
+				show_badge(window, pane, render(pane, COLORS.visual, " VISUAL "))
+				return
+			end
 			if kt ~= nil then
 				window:perform_action(wezterm.action.PopKeyTable, pane)
 			end

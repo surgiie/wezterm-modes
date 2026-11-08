@@ -1,7 +1,7 @@
 --- Build a resolver that maps the active key table to a mode label.
 --- Pure: no wezterm dependency, so it can be unit tested directly.
 ---
---- @param ctx table  Key table name constants: NORMAL, YANK, DELETE, MOTION, REPLACE, KEYMAP, COUNT, JUMP
+--- @param ctx table  Key table name constants: NORMAL, YANK, DELETE, MOTION, REPLACE, KEYMAP, COUNT, JUMP, HINT (optional)
 --- @return fun(key_table: string?, leader_active: boolean): string
 return function(ctx)
 	local NORMAL  = ctx.NORMAL
@@ -12,13 +12,14 @@ return function(ctx)
 	local KEYMAP  = ctx.KEYMAP
 	local COUNT   = ctx.COUNT
 	local JUMP    = ctx.JUMP
+	local HINT    = ctx.HINT
 
 	return function(key_table, leader_active)
 		if leader_active then
 			return "LEADER"
 		elseif key_table == NORMAL then
 			return "NORMAL"
-		elseif key_table == "copy_mode" or key_table == "search_mode" then
+		elseif key_table == "copy_mode" or key_table == "search_mode" or (HINT and key_table == HINT) then
 			return "VISUAL"
 		elseif key_table == YANK or key_table == DELETE or key_table == COUNT
 			or key_table == MOTION or key_table == REPLACE then
