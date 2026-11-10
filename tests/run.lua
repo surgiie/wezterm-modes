@@ -1323,6 +1323,14 @@ test("status: visual overlay is torn down when visual is not allowed for the pan
 	assert_equal(popped, true)
 end)
 
+test("status: hints showing while the plugin runs paint the VISUAL badge", function()
+	local hint_state = { tokens = { { row = 0, col = 0, length = 1, text = "a" } } }
+	local handler = load_status({ hint_state = hint_state })
+	local window = fake_window("hint_mode")
+	handler(window, fake_pane(5))
+	assert_equal(window.left_status, " VISUAL ")
+end)
+
 test("hint mode: cancelling in a pane where normal mode does not run clears the key tables", function()
 	local hint_mode = load_hint_mode({ should_run = function() return false end })
 	local window, pane = hint_window(), hint_pane()

@@ -226,6 +226,7 @@ return function(ctx)
 
 		if active and ctx.hint_state and ctx.hint_state.tokens then
 			publish_mode(window, pane, "VISUAL", true)
+			show_badge(window, pane, render(pane, COLORS.visual, " VISUAL "))
 			return
 		end
 
