@@ -1331,5 +1331,48 @@ test("hint mode: cancelling in a pane where normal mode does not run clears the 
 	assert_equal(window.performed[#window.performed].name, "ClearKeyTableStack")
 end)
 
+-- ── visual_exclude ────────────────────────────────────────────────────────────
+
+local visual_exclusion = dofile("plugin/visual_exclude.lua")
+
+local function exclude_pane(process_name, title)
+	return {
+		get_foreground_process_name = function() return process_name end,
+		get_title = function() return title end,
+	}
+end
+
+test("visual_exclude: default matches vim and nvim by process name", function()
+	for _, process_name in ipairs({ "/usr/bin/nvim", "/usr/bin/vim", "gvim", "/usr/bin/vi", "view", "vimdiff" }) do
+		assert_equal(visual_exclusion.pane_matches(exclude_pane(process_name, ""), visual_exclusion.DEFAULT_PATTERNS), true, process_name)
+	end
+end)
+
+test("visual_exclude: default matches vim and nvim by title when process name is hidden", function()
+	for _, title in ipairs({ "init.lua - NVIM", "notes.md (~/docs) - VIM" }) do
+		assert_equal(visual_exclusion.pane_matches(exclude_pane("wsl.exe", title), visual_exclusion.DEFAULT_PATTERNS), true, title)
+	end
+end)
+
+test("visual_exclude: default does not match claude, node, shells or viewer", function()
+	for _, process_name in ipairs({ "/usr/bin/claude", "node", "/usr/bin/zsh", "/usr/bin/viewer" }) do
+		assert_equal(visual_exclusion.pane_matches(exclude_pane(process_name, "claude code"), visual_exclusion.DEFAULT_PATTERNS), false, process_name)
+	end
+end)
+
+test("visual_exclude: custom patterns replace the defaults", function()
+	local custom_patterns = { "^htop$" }
+	assert_equal(visual_exclusion.pane_matches(exclude_pane("/usr/bin/htop", ""), custom_patterns), true)
+	assert_equal(visual_exclusion.pane_matches(exclude_pane("/usr/bin/nvim", ""), custom_patterns), false)
+end)
+
+test("visual_exclude: nil process name and title do not error", function()
+	assert_equal(visual_exclusion.pane_matches(exclude_pane(nil, nil), visual_exclusion.DEFAULT_PATTERNS), false)
+end)
+
+test("visual_exclude: Windows-style path uses the executable basename", function()
+	assert_equal(visual_exclusion.pane_matches(exclude_pane("C:\\tools\\nvim.exe", ""), visual_exclusion.DEFAULT_PATTERNS), true)
+end)
+
 print(string.format("\n%d tests, %d failed", total, failures))
 os.exit(failures == 0 and 0 or 1)

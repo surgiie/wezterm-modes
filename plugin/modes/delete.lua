@@ -11,6 +11,7 @@ return function(ctx)
 	local count_state  = ctx.count_state
 	local do_change    = ctx.do_change
 	local delete_to_line_bound = ctx.delete_to_line_bound
+	local backward_kill_line   = wezterm.action.SendString("\x18\x7f")
 
 	--- Delete word forward/backward, repeated by any pending numeric prefix
 	--- (e.g. the "3" in "3dw"), then clear the count and return to normal.
@@ -62,12 +63,13 @@ return function(ctx)
 		{ key = "$", mods = "SHIFT", action = delete_to_line_bound({ wezterm.action.SendKey({ key = "k", mods = "CTRL" }) }) },
 		{ key = "4", mods = "SHIFT", action = delete_to_line_bound({ wezterm.action.SendKey({ key = "k", mods = "CTRL" }) }) },
 
-		-- d0: delete to start of line (readline CTRL+U)
-		{ key = "0", mods = "NONE", action = delete_to_line_bound({ wezterm.action.SendKey({ key = "u", mods = "CTRL" }) }) },
+		-- d0: delete from cursor to start of line. Uses backward-kill-line
+		-- (CTRL+X BACKSPACE) because zsh binds CTRL+U to kill-whole-line.
+		{ key = "0", mods = "NONE", action = delete_to_line_bound({ backward_kill_line }) },
 
-		-- d^: delete to first non-whitespace (readline CTRL+U then re-type leading whitespace)
-		{ key = "^", mods = "NONE",  action = delete_to_line_bound({ wezterm.action.SendKey({ key = "u", mods = "CTRL" }) }) },
-		{ key = "^", mods = "SHIFT", action = delete_to_line_bound({ wezterm.action.SendKey({ key = "u", mods = "CTRL" }) }) },
-		{ key = "6", mods = "SHIFT", action = delete_to_line_bound({ wezterm.action.SendKey({ key = "u", mods = "CTRL" }) }) },
+		-- d^: same backward-kill-line behavior as d0
+		{ key = "^", mods = "NONE",  action = delete_to_line_bound({ backward_kill_line }) },
+		{ key = "^", mods = "SHIFT", action = delete_to_line_bound({ backward_kill_line }) },
+		{ key = "6", mods = "SHIFT", action = delete_to_line_bound({ backward_kill_line }) },
 	}
 end

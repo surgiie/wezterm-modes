@@ -250,17 +250,20 @@ vim_modes.apply_to_config(config)
 ```lua
 vim_modes.apply_to_config(config, {
     -- called each time a pane is focused to decide if the plugin runs;
-    -- receives (pane, default_pane_is_shell, mode) so you can reuse the default check.
-    -- mode is "normal" (default: pane is a shell) or "visual" (default: pane is not vim/nvim)
-    should_run = function(pane, is_shell, mode)
-        if mode == "visual" then
-            return true
-        end
+    -- receives (pane, default_pane_is_shell) so you can reuse the default check.
+    -- governs modal editing only (default: pane is a shell)
+    should_run = function(pane, is_shell)
         return is_shell(pane)
     end,
 
-    -- global key that opens visual mode (hints, then copy mode) in any pane where
-    -- should_run(..., "visual") holds; passed through to the pane otherwise.
+    -- visual mode (hints, then copy mode) runs in every pane except those whose
+    -- foreground process name or title matches one of these Lua patterns
+    -- (case-insensitive). Titles are matched too since process names don't cross WSL.
+    -- default: vim/nvim only
+    visual_exclude = { "^g?n?vim", "^vi$", "^view$", "^vimdiff$", " %- g?n?vim$" },
+
+    -- global key that opens visual mode (hints, then copy mode) in any pane not
+    -- matched by visual_exclude; passed through to the pane otherwise.
     -- default: { key = "x", mods = "CTRL|SHIFT" }; false disables
     visual_key = { key = "x", mods = "CTRL|SHIFT" },
 
